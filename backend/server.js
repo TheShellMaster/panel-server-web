@@ -195,16 +195,24 @@ function setupNatRules() {
     // Commands to safely remove old rules to avoid duplicates
     const cleanRules = [
         `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 5667 -j ACCEPT 2>/dev/null || true`,
-        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true`
+        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true`,
+        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true`,
+        `sudo iptables -t nat -D POSTROUTING -o ${iface} -j MASQUERADE 2>/dev/null || true`
     ];
     
     let cleanedCount = 0;
     const applyRules = () => {
         // Insert ZiVPN ACCEPT rule at position 1
         exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 5667 -j ACCEPT`, () => {
-            // Insert FastDNS REDIRECT rule at position 1 (pushing ZiVPN to position 2)
-            exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300`, () => {
-                console.log(`NAT rules configured successfully on interface ${iface}`);
+            // Insert ZiVPN port range redirect at position 1 (pushing port 5667 to position 2)
+            exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 6000:19999 -j DNAT --to-destination :5667`, () => {
+                // Insert FastDNS REDIRECT rule at position 1 (pushing other rules down)
+                exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300`, () => {
+                    // Append MASQUERADE in POSTROUTING
+                    exec(`sudo iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE`, () => {
+                        console.log(`NAT rules and masquerading configured successfully on interface ${iface}`);
+                    });
+                });
             });
         });
     };

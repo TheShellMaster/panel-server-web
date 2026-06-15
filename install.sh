@@ -133,15 +133,24 @@ systemctl restart badvpn-udpgw
 echo -e "\n${GREEN}[*] Installation de ZiVPN...${NC}"
 # Création du répertoire de configuration
 mkdir -p /etc/zivpn
-# Téléchargement du binaire ZiVPN (Exemple de lien de version stable)
-wget -O /usr/local/bin/zivpn "https://github.com/amnezia-vpn/amnezia-client/releases/download/2.1.2/amnezia-client-linux-x64" || \
-echo "Veuillez configurer manuellement le binaire zivpn si le téléchargement par défaut échoue."
+# Téléchargement du binaire ZiVPN officiel
+wget -O /usr/local/bin/zivpn "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-amd64" || \
+echo "Échec du téléchargement automatique de ZiVPN. Veuillez configurer manuellement le binaire."
 chmod +x /usr/local/bin/zivpn || true
+
+# Génération des fichiers de certificat SSL auto-signés requis par ZiVPN
+echo -e "${GREEN}[*] Génération des certificats SSL pour ZiVPN...${NC}"
+openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
+  -subj "/C=US/ST=California/L=Los Angeles/O=Example Corp/OU=IT Department/CN=zivpn" \
+  -keyout "/etc/zivpn/zivpn.key" -out "/etc/zivpn/zivpn.crt" || true
 
 # Fichier de configuration par défaut pour ZiVPN
 cat <<EOF > /etc/zivpn/config.json
 {
-  "port": ${PORT_ZIVPN},
+  "listen": ":${PORT_ZIVPN}",
+  "cert": "/etc/zivpn/zivpn.crt",
+  "key": "/etc/zivpn/zivpn.key",
+  "obfs": "zivpn",
   "auth": {
     "mode": "passwords",
     "config": [
@@ -154,18 +163,33 @@ EOF
 # Service systemd pour ZiVPN
 cat <<EOF > /etc/systemd/system/zivpn.service
 [Unit]
-Description=ZiVPN Server Service
+Description=zivpn VPN Server
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/zivpn -config /etc/zivpn/config.json
+User=root
+WorkingDirectory=/etc/zivpn
+ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
 Restart=always
-RestartSec=5
+RestartSec=3
+Environment=ZIVPN_LOG_LEVEL=info
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Configuration des permissions pour que le dashboard (faisant tourner PM2 en non-root)
+# puisse modifier config.json tout en permettant au service systemd (qui drops privileges)
+# d'accéder au fichier zivpn.key (propriété root:root 600 obligatoire).
+REAL_USER=${SUDO_USER:-$USER}
+chown -R "$REAL_USER:$REAL_USER" /etc/zivpn || true
+chown root:root /etc/zivpn/zivpn.key /etc/zivpn/zivpn.crt 2>/dev/null || true
+chmod 600 /etc/zivpn/zivpn.key 2>/dev/null || true
+chmod 644 /etc/zivpn/zivpn.crt /etc/zivpn/config.json 2>/dev/null || true
 
 systemctl daemon-reload
 systemctl enable zivpn || true
@@ -183,12 +207,14 @@ chmod +x /usr/local/bin/dnstt-server || true
 if [ ! -f /etc/dnstt/server.key ]; then
     echo -e "${GREEN}[*] Génération des clés cryptographiques pour FastDNS...${NC}"
     cd /etc/dnstt
-    # Utilisation d'openssl ou dnstt pour générer des clés.
-    # Dans le cas d'un binaire standard de dnstt :
-    # /usr/local/bin/dnstt-server -gen-key -privkey server.key -pubkey server.pub
-    # alternative si le binaire n'est pas opérationnel immédiatement :
-    ssh-keygen -t ed25519 -f /etc/dnstt/server.key -N ""
-    ssh-keygen -y -f /etc/dnstt/server.key > /etc/dnstt/server.pub
+    # Utilisation recommandée de dnstt-server pour générer des clés compatibles avec dnstt
+    if /usr/local/bin/dnstt-server -gen-key -privkey server.key -pubkey server.pub; then
+        echo -e "${GREEN}[*] Clés FastDNS générées avec succès.${NC}"
+    else
+        echo -e "${YELLOW}Attention: dnstt-server n'a pas pu générer les clés directement. Génération via ssh-keygen en guise de fallback...${NC}"
+        ssh-keygen -t ed25519 -f server.key -N ""
+        ssh-keygen -y -f server.key > server.pub
+    fi
     cd -
 fi
 
@@ -208,11 +234,48 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# Redirection iptables du port 53 (UDP) vers le port 5300 (UDP) pour le DNS
-iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 || true
+# Détection de l'interface réseau publique par défaut
+IFACE=$(ip -4 route show default | grep -oP 'dev \K\S+' | head -n1)
+IFACE=${IFACE:-enX0}
+echo -e "${GREEN}[*] Interface réseau détectée : ${IFACE}${NC}"
+
+# Activation persistante de l'IP forwarding (IPv4 & IPv6)
+echo -e "${GREEN}[*] Activation de l'IP forwarding...${NC}"
+sysctl -w net.ipv4.ip_forward=1 || true
+sysctl -w net.ipv6.conf.all.forwarding=1 || true
+if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+fi
+if ! grep -q "net.ipv6.conf.all.forwarding=1" /etc/sysctl.conf; then
+    echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+fi
+sysctl -p || true
+
+# Redirections pare-feu et NAT pour tous les protocoles (FastDNS, ZiVPN, UDP Custom)
+echo -e "${GREEN}[*] Application des règles de pare-feu et NAT...${NC}"
+
+# Nettoyage des anciennes règles identiques pour éviter les doublons au ré-exécution du script
+iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
+iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
+iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true
+iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null || true
+
+# Application des règles avec la bonne priorité
+# 1. Accepter le trafic ZiVPN sur son port direct
+iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 5667 -j ACCEPT
+# 2. Rediriger la plage de ports ZiVPN
+iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667
+# 3. Rediriger le DNS vers dnstt-server
+iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
+# 4. Masquerading pour autoriser l'accès internet
+iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+
+# Répéter la redirection DNS pour IPv6 si applicable
+ip6tables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true
 ip6tables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 || true
 
-# Sauvegarde des règles iptables
+# Sauvegarde persistante des règles iptables
+mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4 || true
 ip6tables-save > /etc/iptables/rules.v6 || true
 
@@ -239,6 +302,9 @@ EGRESS_LIMIT_GB=100
 BOT_PM2_NAME=whatsapp-bot
 BOT_LOGS_OUT_PATH=/home/ubuntu/.pm2/logs/whatsapp-bot-out.log
 BOT_LOGS_ERR_PATH=/home/ubuntu/.pm2/logs/whatsapp-bot-error.log
+FASTDNS_NS=${DNS_NS}
+FASTDNS_PUBKEY_PATH=/etc/dnstt/server.pub
+NETWORK_INTERFACE=${IFACE}
 EOF
 
 # Installer les dépendances Node.js du Dashboard
