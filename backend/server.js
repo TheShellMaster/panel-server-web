@@ -49,6 +49,7 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
         )`, () => {
             checkUserExpirations();
             initIptablesRules();
+            setupNatRules();
         });
     }
 });
@@ -168,6 +169,52 @@ function initIptablesRules() {
             exec(`sudo iptables -D OUTPUT -m owner --uid-owner ${user.username} -m comment --comment "vpn_${user.username}"`, () => {
                 exec(`sudo iptables -A OUTPUT -m owner --uid-owner ${user.username} -m comment --comment "vpn_${user.username}"`);
             });
+        });
+    });
+}
+
+function getNetworkInterface() {
+    if (NETWORK_INTERFACE) return NETWORK_INTERFACE;
+    try {
+        const interfaces = os.networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+            if (name !== 'lo' && !name.includes('docker') && !name.includes('veth')) {
+                const iface = interfaces[name].find(i => !i.internal);
+                if (iface) return name;
+            }
+        }
+    } catch (e) {
+        console.error('Error detecting network interface:', e);
+    }
+    return 'enX0'; // Default fallback
+}
+
+function setupNatRules() {
+    const iface = getNetworkInterface();
+    
+    // Commands to safely remove old rules to avoid duplicates
+    const cleanRules = [
+        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 5667 -j ACCEPT 2>/dev/null || true`,
+        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true`
+    ];
+    
+    let cleanedCount = 0;
+    const applyRules = () => {
+        // Insert ZiVPN ACCEPT rule at position 1
+        exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 5667 -j ACCEPT`, () => {
+            // Insert FastDNS REDIRECT rule at position 1 (pushing ZiVPN to position 2)
+            exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300`, () => {
+                console.log(`NAT rules configured successfully on interface ${iface}`);
+            });
+        });
+    };
+
+    cleanRules.forEach(cmd => {
+        exec(cmd, () => {
+            cleanedCount++;
+            if (cleanedCount === cleanRules.length) {
+                applyRules();
+            }
         });
     });
 }
