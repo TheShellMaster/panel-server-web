@@ -474,6 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(`${API_URL}/api/stats`);
             if (!res.ok) throw new Error('Network response not ok');
             const data = await res.json();
+            systemStats = data;
             updateDashboard(data);
         } catch (e) {
             console.error('Error fetching system stats:', e);
@@ -611,6 +612,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const vpnConfigContent = document.getElementById('vpn-config-content');
 
     let allVpnUsers = [];
+    let systemStats = null;
 
     // Fetch and render VPN users
     async function fetchVpnUsers() {
@@ -621,13 +623,13 @@ document.addEventListener('DOMContentLoaded', () => {
             renderVpnUsers();
         } catch (e) {
             console.error('Error fetching VPN users:', e);
-            vpnUsersList.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--color-danger); padding: 2rem;">Erreur de chargement : ${e.message}</td></tr>`;
+            vpnUsersList.innerHTML = `<tr><td colspan="8" class="table-alert table-alert-danger">Erreur de chargement : ${e.message}</td></tr>`;
         }
     }
 
     function renderVpnUsers() {
         if (allVpnUsers.length === 0) {
-            vpnUsersList.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">Aucun compte configuré.</td></tr>`;
+            vpnUsersList.innerHTML = `<tr><td colspan="8" class="table-alert table-alert-muted">Aucun compte configuré.</td></tr>`;
             return;
         }
 
@@ -641,11 +643,11 @@ document.addEventListener('DOMContentLoaded', () => {
             
             let daysText = '';
             if (daysLeft > 0) {
-                daysText = `<span style="font-size: 0.8rem; color: var(--text-muted);">(${daysLeft}j restants)</span>`;
+                daysText = `<span class="expiry-days expiry-days-muted">(${daysLeft}j restants)</span>`;
             } else if (daysLeft === 0) {
-                daysText = `<span style="font-size: 0.8rem; color: var(--color-warning); font-weight: 600;">(Expire aujourd'hui)</span>`;
+                daysText = `<span class="expiry-days expiry-days-warning">(Expire aujourd'hui)</span>`;
             } else {
-                daysText = `<span style="font-size: 0.8rem; color: var(--color-danger); font-weight: 600;">(Expiré)</span>`;
+                daysText = `<span class="expiry-days expiry-days-danger">(Expiré)</span>`;
             }
 
             // Status badge class
@@ -675,19 +677,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 <tr>
                     <td data-label="Utilisateur"><strong>${escapeHTML(user.username)}</strong></td>
                     <td data-label="Protocole"><span class="badge-proto ${user.protocol}">${user.protocol}</span></td>
-                    <td data-label="Mot de passe"><code style="font-family: var(--font-mono); font-size: 0.85rem;">${escapeHTML(user.password)}</code></td>
+                    <td data-label="Mot de passe"><code class="password-code">${escapeHTML(user.password)}</code></td>
                     <td data-label="Expiration">
-                        <div style="display: flex; flex-direction: column;">
+                        <div class="expiry-wrapper">
                             <span>${user.expires_at}</span>
                             ${daysText}
                         </div>
                     </td>
                     <td data-label="Connexions Max">${user.max_connections}</td>
-                    <td data-label="Consommation"><span style="font-size: 0.85rem; font-weight: 600;">${formattedUsed} / ${formattedLimit}</span></td>
+                    <td data-label="Consommation"><span class="usage-text">${formattedUsed} / ${formattedLimit}</span></td>
                     <td data-label="Statut"><span class="badge ${statusClass}">${statusLabel}</span></td>
                     <td data-label="Actions">
                         <div class="table-actions">
-                            <button class="btn btn-sm" style="background: rgba(99, 102, 241, 0.15); color: var(--color-accent); border: 1px solid rgba(99, 102, 241, 0.2);" onclick="showVpnConfig(${user.id})">📋 Config</button>
+                            <button class="btn btn-sm btn-config" onclick="showVpnConfig(${user.id})">📋 Config</button>
                             <button class="btn btn-sm btn-edit" onclick="openEditModal(${user.id})">Éditer</button>
                             ${suspendBtn}
                             <button class="btn btn-sm btn-delete" onclick="deleteVpnUser(${user.id}, '${escapeHTML(user.username)}')">Supprimer</button>
@@ -865,12 +867,14 @@ document.addEventListener('DOMContentLoaded', () => {
                          `Utilisateur (User) : ${user.username}\n` +
                          `Mot de passe (Pass) : ${user.password}`;
         } else if (user.protocol === 'fastdns') {
+            const ns = (systemStats && systemStats.fastdns && systemStats.fastdns.ns) || 'ns.example.com';
+            const pubkey = (systemStats && systemStats.fastdns && systemStats.fastdns.pubkey) || 'Clé non générée';
             configText = `=== CONFIGURATION FASTDNS ===\n` +
                          `Hôte (Host) : ${host}\n` +
                          `Utilisateur (User) : ${user.username}\n` +
                          `Mot de passe (Pass) : ${user.password}\n` +
-                         `Nameserver (NS) : t.innovationservicescm.cm\n` +
-                         `Clé Publique (Pubkey) : 50de83ec08cc05fbd24630e48c5ee4f2b2ed104bd340f299e1db88d612df0225\n` +
+                         `Nameserver (NS) : ${ns}\n` +
+                         `Clé Publique (Pubkey) : ${pubkey}\n` +
                          `DNS de contournement (Bypass) : 8.8.8.8`;
         }
         

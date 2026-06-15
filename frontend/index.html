@@ -511,19 +511,19 @@
 
     <!-- Connection Config Modal -->
     <div class="modal" id="vpn-config-modal">
-        <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-content modal-content-config">
             <div class="modal-header">
                 <h3>Configuration de connexion client</h3>
                 <span class="close-btn" id="config-modal-close">&times;</span>
             </div>
-            <div class="modal-body" style="margin-top: 1rem;">
+            <div class="modal-body modal-body-config">
                 <div class="form-group">
                     <label>Paramètres de connexion du Client</label>
-                    <div id="vpn-config-content" style="background: var(--terminal-bg); padding: 1.25rem; border-radius: 12px; font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: #6ee7b7; border: 1px solid var(--border-color);">
+                    <div id="vpn-config-content" class="config-content-box">
                         <!-- Filled dynamically -->
                     </div>
                 </div>
-                <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem; gap: 10px;">
+                <div class="form-actions">
                     <button class="btn btn-secondary" id="btn-close-vpn-config">Fermer</button>
                     <button class="btn btn-primary" id="btn-copy-vpn-config">Copier la config</button>
                 </div>

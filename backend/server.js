@@ -68,8 +68,20 @@ function syncZivpnUsers(database) {
                 }
                 
                 let config = {};
+                const configDir = path.dirname(ZIVPN_CONFIG_PATH);
+                if (!fs.existsSync(configDir)) {
+                    fs.mkdirSync(configDir, { recursive: true });
+                }
+
                 if (fs.existsSync(ZIVPN_CONFIG_PATH)) {
-                    config = JSON.parse(fs.readFileSync(ZIVPN_CONFIG_PATH, 'utf8'));
+                    try {
+                        const content = fs.readFileSync(ZIVPN_CONFIG_PATH, 'utf8').trim();
+                        if (content) {
+                            config = JSON.parse(content);
+                        }
+                    } catch (jsonErr) {
+                        console.error('Error parsing ZiVPN config, resetting:', jsonErr);
+                    }
                 }
                 
                 if (!config.auth) config.auth = {};
@@ -671,6 +683,17 @@ app.get('/api/stats', (req, res) => {
     const vnstat = getVnstatStats();
     const bot = getBotStats();
     
+    // Read FastDNS public key dynamically from server file
+    let fastdnsPubkey = 'Clé non générée';
+    try {
+        const pubkeyPath = process.env.FASTDNS_PUBKEY_PATH || '/etc/dnstt/server.pub';
+        if (fs.existsSync(pubkeyPath)) {
+            fastdnsPubkey = fs.readFileSync(pubkeyPath, 'utf8').trim();
+        }
+    } catch (e) {
+        console.error('Error reading FastDNS public key:', e);
+    }
+
     res.json({
         hostname: os.hostname(),
         platform: os.platform(),
@@ -690,7 +713,11 @@ app.get('/api/stats', (req, res) => {
             speed: networkSpeed,
             vnstat: vnstat
         },
-        bot: bot
+        bot: bot,
+        fastdns: {
+            ns: process.env.FASTDNS_NS || 'ns.example.com',
+            pubkey: fastdnsPubkey
+        }
     });
 });
 
