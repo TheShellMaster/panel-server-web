@@ -855,10 +855,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const host = window.location.hostname || '184.73.52.96';
         
         if (user.protocol === 'zivpn') {
+            const zivpnPort = (systemStats && systemStats.zivpn && systemStats.zivpn.port) || 5667;
             configText = `=== CONFIGURATION UDP ZIVPN ===\n` +
                          `Hôte (Host) : ${host}\n` +
                          `Mot de passe (Pass) : ${user.password}\n` +
-                         `Port : 5667\n` +
+                         `Port : ${zivpnPort}\n` +
                          `Obfuscation : zivpn`;
         } else if (user.protocol === 'udpcustom') {
             configText = `=== CONFIGURATION UDP CUSTOM ===\n` +

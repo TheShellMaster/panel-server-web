@@ -808,6 +808,9 @@ app.get('/api/stats', (req, res) => {
             vnstat: vnstat
         },
         bot: bot,
+        zivpn: {
+            port: getZivpnPort()
+        },
         fastdns: {
             ns: process.env.FASTDNS_NS || 'ns.example.com',
             pubkey: fastdnsPubkey
