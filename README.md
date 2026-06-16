@@ -15,6 +15,7 @@ Un guide de référence pour le déploiement automatique d'un tableau de bord de
 6. [ZONES MODIFIABLES ET CONFIGURATION DE L'APPLICATION (.env)](#6-zones-modifiables-et-configuration-de-lapplication-env)
 7. [GUIDE D'INTÉGRATION D'UN NOUVEAU BOT (DANS LE TABLEAU DE BORD)](#7-guide-dintégration-dun-nouveau-bot-dans-le-tableau-de-bord)
 8. [GUIDE DE DÉPLOIEMENT RAPIDE ET COMMANDES DE MAINTENANCE](#8-guide-de-déploiement-rapide-et-commandes-de-maintenance)
+9. [FURTIVITÉ DU TRAFIC ET MESURES ANTI-DÉTECTION (DPI)](#9-furtivité-du-trafic-et-mesures-anti-détection-dpi)
 
 ---
 
@@ -203,3 +204,37 @@ L'installateur vous guidera en vous posant quelques questions simples (choix des
   ```bash
   sudo systemctl restart zivpn
   ```
+
+---
+
+## 9. FURTIVITÉ DU TRAFIC ET MESURES ANTI-DÉTECTION (DPI)
+
+Cette section détaille les risques de détection passive et active par les Fournisseurs d'Accès Internet (FAI) et présente les solutions techniques recommandées pour optimiser le camouflage des tunnels UDP du serveur.
+
+### Zone 1 : Ce que le FAI perçoit du tunnel UDP
+
+Même si le contenu du trafic est chiffré, le FAI analyse le comportement et les métadonnées des flux réseau (Traffic Flow Analysis) :
+1. **Anomalie de persistance et de symétrie** : L'UDP est par nature sans état (*stateless*). Un flux UDP continu restant ouvert pendant des heures vers une unique destination avec un débit symétrique important (upload/download) est immédiatement suspect aux yeux d'un système DPI (Deep Packet Inspection).
+2. **Uniformité et fragmentation des paquets** : L'encapsulation VPN impose des tailles de paquets maximales et constantes adaptées au MTU configuré (généralement entre 1300 et 1450 octets), ce qui constitue une signature claire de tunneling.
+3. **Entropie élevée** : Les données chiffrées présentent un désordre d'octets (entropie) proche de 1. Si le port d'écoute n'est pas associé à un protocole standard (ex: port 5667), le DPI catégorise instantanément le flux comme du "chiffrement inconnu".
+4. **Rythme cardiaque (Keepalives)** : Pour maintenir la table d'association NAT ouverte dans les routeurs du FAI, le VPN envoie des paquets réguliers de petite taille en période d'inactivité, ce qui génère un rythme périodique facilement identifiable.
+
+### Zone 2 : Les risques de détection (Bloc par bloc)
+
+Le filtrage automatisé des opérateurs s'articule généralement autour de deux blocs :
+* **Bloc A : L'anomalie du port (Le drapeau rouge)** : L'utilisation de ports exotiques ou aléatoires (ex: 5667, 36712, 7300, etc.) combinée à un gros volume de données UDP vers une IP de datacenter déclenche des règles de limitation de débit (*throttling*) ou de blocage total de l'IP.
+* **Bloc B : La signature du protocole** : Sans obfuscation de paquets ou avec une configuration basique, l'absence de structure standard reconnue par l'Internet pousse le DPI à bloquer la connexion.
+
+### Zone 3 : Les solutions pour blinder la configuration
+
+Pour assurer la discrétion du serveur face aux analyses des opérateurs, deux stratégies de mimétisme doivent être privilégiées :
+
+#### Bloc A : Le camouflage suprême par le port 443 (QUIC / HTTP/3)
+* **Le principe** : HTTP/3 utilise le protocole de transport **QUIC**, qui s'exécute exclusivement en **UDP sur le port 443**. Puisque le blocage de l'UDP 443 casserait l'accès aux services majeurs (YouTube, Google, CDNs), les FAI sont obligés de le laisser passer.
+* **La mise en œuvre** : Configurer le serveur ZiVPN pour écouter sur le port **UDP 443**. Nginx peut continuer d'écouter sur **TCP 443** (pour le HTTPS/panel) sans conflit sur la même machine.
+* **Le spoofing SNI** : Côté client, renseigner un champ SNI/Host pointant vers un domaine blanc légitime utilisant QUIC (ex: `developers.cloudflare.com` ou `ajax.googleapis.com`) afin de légitimer la phase d'initialisation de la connexion.
+
+#### Bloc B : Le camouflage de survie par le port 53 (DNS)
+* **Le principe** : Le port **UDP 53** (DNS) est vital et très rarement bloqué, même lorsque le forfait data de l'utilisateur est épuisé. L'outil FastDNS (`dnstt`) encapsule les paquets VPN dans des requêtes DNS légitimes envoyées à un résolveur public (ex: `1.1.1.1`), qui les transmet à son tour au VPS via un enregistrement NS délégué.
+* **Le piège à éviter** : Le trafic DNS est naturellement très léger. Si le volume transféré atteint des gigaoctets, le FAI bloquera le domaine ou l'IP pour trafic incohérent. Ce profil doit être restreint à un **usage de secours** (messagerie texte légère) et limité par quotas dans le panel.
+

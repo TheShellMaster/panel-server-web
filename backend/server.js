@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { exec, execSync } = require('child_process');
+const { exec, execSync, spawn } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
@@ -117,19 +117,31 @@ function manageSystemUser(username, password, action) {
             exec(`getent passwd ${username}`, (err, stdout, stderr) => {
                 const userExists = !err && stdout;
                 
-                const createCmd = userExists 
-                    ? `sudo usermod -s /bin/false -g vpnusers ${username} && echo "${username}:${password}" | sudo chpasswd`
-                    : `sudo useradd -M -s /bin/false -g vpnusers ${username} && echo "${username}:${password}" | sudo chpasswd`;
+                const systemCmd = userExists 
+                    ? `sudo usermod -s /bin/false -g vpnusers ${username}`
+                    : `sudo useradd -M -s /bin/false -g vpnusers ${username}`;
                 
-                exec(createCmd, (errCreate, stdoutCreate, stderrCreate) => {
-                    if (errCreate) return reject(new Error(`Échec de création de l'utilisateur : ${stderrCreate || errCreate.message}`));
+                exec(systemCmd, (errCmd, stdoutCmd, stderrCmd) => {
+                    if (errCmd) return reject(new Error(`Échec de configuration de l'utilisateur : ${stderrCmd || errCmd.message}`));
                     
-                    // Add iptables accounting rule
-                    exec(`sudo iptables -D OUTPUT -m owner --uid-owner ${username} -m comment --comment "vpn_${username}"`, () => {
-                        exec(`sudo iptables -A OUTPUT -m owner --uid-owner ${username} -m comment --comment "vpn_${username}"`, () => {
-                            resolve();
+                    // Securely set password via chpasswd stdin
+                    const chpasswd = spawn('sudo', ['chpasswd']);
+                    let errOutput = '';
+                    chpasswd.stderr.on('data', (data) => { errOutput += data; });
+                    chpasswd.on('close', (code) => {
+                        if (code !== 0) {
+                            return reject(new Error(`Échec de définition du mot de passe : ${errOutput}`));
+                        }
+                        
+                        // Add iptables accounting rule
+                        exec(`sudo iptables -D OUTPUT -m owner --uid-owner ${username} -m comment --comment "vpn_${username}"`, () => {
+                            exec(`sudo iptables -A OUTPUT -m owner --uid-owner ${username} -m comment --comment "vpn_${username}"`, () => {
+                                resolve();
+                            });
                         });
                     });
+                    chpasswd.stdin.write(`${username}:${password}\n`);
+                    chpasswd.stdin.end();
                 });
             });
         } else if (action === 'delete') {
@@ -150,10 +162,18 @@ function manageSystemUser(username, password, action) {
                 resolve();
             });
         } else if (action === 'update_password') {
-            exec(`echo "${username}:${password}" | sudo chpasswd`, (errPass, stdoutPass, stderrPass) => {
-                if (errPass) return reject(new Error(`Échec de mise à jour du mot de passe : ${stderrPass || errPass.message}`));
+            // Securely set password via chpasswd stdin
+            const chpasswd = spawn('sudo', ['chpasswd']);
+            let errOutput = '';
+            chpasswd.stderr.on('data', (data) => { errOutput += data; });
+            chpasswd.on('close', (code) => {
+                if (code !== 0) {
+                    return reject(new Error(`Échec de mise à jour du mot de passe : ${errOutput}`));
+                }
                 resolve();
             });
+            chpasswd.stdin.write(`${username}:${password}\n`);
+            chpasswd.stdin.end();
         } else {
             reject(new Error('Action inconnue pour l\'utilisateur système'));
         }
