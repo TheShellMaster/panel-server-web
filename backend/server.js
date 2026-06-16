@@ -209,13 +209,32 @@ function getNetworkInterface() {
     return 'enX0'; // Default fallback
 }
 
+function getZivpnPort() {
+    try {
+        if (fs.existsSync(ZIVPN_CONFIG_PATH)) {
+            const config = JSON.parse(fs.readFileSync(ZIVPN_CONFIG_PATH, 'utf8'));
+            if (config && config.listen) {
+                const parts = config.listen.split(':');
+                const port = parseInt(parts[parts.length - 1], 10);
+                if (port > 0) return port;
+            }
+        }
+    } catch (e) {
+        console.error('Error reading ZiVPN port from config, using default 5667:', e);
+    }
+    return 5667;
+}
+
 function setupNatRules() {
     const iface = getNetworkInterface();
+    const zivpnPort = getZivpnPort();
     
     // Commands to safely remove old rules to avoid duplicates
     const cleanRules = [
         `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 5667 -j ACCEPT 2>/dev/null || true`,
         `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true`,
+        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport ${zivpnPort} -j ACCEPT 2>/dev/null || true`,
+        `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 6000:19999 -j DNAT --to-destination :${zivpnPort} 2>/dev/null || true`,
         `sudo iptables -t nat -D PREROUTING -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true`,
         `sudo iptables -t nat -D POSTROUTING -o ${iface} -j MASQUERADE 2>/dev/null || true`
     ];
@@ -223,14 +242,14 @@ function setupNatRules() {
     let cleanedCount = 0;
     const applyRules = () => {
         // Insert ZiVPN ACCEPT rule at position 1
-        exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 5667 -j ACCEPT`, () => {
-            // Insert ZiVPN port range redirect at position 1 (pushing port 5667 to position 2)
-            exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 6000:19999 -j DNAT --to-destination :5667`, () => {
+        exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport ${zivpnPort} -j ACCEPT`, () => {
+            // Insert ZiVPN port range redirect at position 1 (pushing port to position 2)
+            exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 6000:19999 -j DNAT --to-destination :${zivpnPort}`, () => {
                 // Insert FastDNS REDIRECT rule at position 1 (pushing other rules down)
                 exec(`sudo iptables -t nat -I PREROUTING 1 -i ${iface} -p udp --dport 53 -j REDIRECT --to-ports 5300`, () => {
                     // Append MASQUERADE in POSTROUTING
                     exec(`sudo iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE`, () => {
-                        console.log(`NAT rules and masquerading configured successfully on interface ${iface}`);
+                        console.log(`NAT rules and masquerading configured successfully on interface ${iface} for ZiVPN port ${zivpnPort}`);
                     });
                 });
             });

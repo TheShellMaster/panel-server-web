@@ -257,14 +257,16 @@ echo -e "${GREEN}[*] Application des règles de pare-feu et NAT...${NC}"
 # Nettoyage des anciennes règles identiques pour éviter les doublons au ré-exécution du script
 iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
 iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
+iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport "${PORT_ZIVPN}" -j ACCEPT 2>/dev/null || true
+iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :"${PORT_ZIVPN}" 2>/dev/null || true
 iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true
 iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null || true
 
 # Application des règles avec la bonne priorité
 # 1. Accepter le trafic ZiVPN sur son port direct
-iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 5667 -j ACCEPT
+iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport "${PORT_ZIVPN}" -j ACCEPT
 # 2. Rediriger la plage de ports ZiVPN
-iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667
+iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :"${PORT_ZIVPN}"
 # 3. Rediriger le DNS vers dnstt-server
 iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
 # 4. Masquerading pour autoriser l'accès internet
