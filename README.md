@@ -85,9 +85,12 @@ GEMINI_API_KEY=    ← collez votre clé ici
 
 C'est votre numéro personnel. Le bot n'écoutera que vos messages.
 
-**Format :** `VOTRE_NUMERO@s.whatsapp.net`
+**Format :** `CODE_PAYS+NUMERO@s.whatsapp.net` (sans +, sans espace, sans 00)
 
-Exemple : si votre numéro est `+237 659 554 712` → `237659554712@s.whatsapp.net`
+Exemples :
+- `+221 77 123 45 67` → `221771234567@s.whatsapp.net`
+- `+33 6 12 34 56 78` → `33612345678@s.whatsapp.net`
+- `+1 555 123 4567` → `15551234567@s.whatsapp.net`
 
 **Fichier :** `/home/ubuntu/bot_whatsapp/.env`
 
@@ -97,7 +100,7 @@ sudo nano /home/ubuntu/bot_whatsapp/.env
 
 **Ligne à modifier :**
 ```
-OWNER_JID=    ← mettez votre JID ici (ex: 237659554712@s.whatsapp.net)
+OWNER_JID=    ← mettez votre JID ici (ex: 221771234567@s.whatsapp.net)
 ```
 
 **Même chose dans le backend :**
@@ -110,7 +113,7 @@ sudo nano /home/ubuntu/server_dashboard/.env
 
 Ajoutez la ligne :
 ```
-OWNER_JID=237659554712@s.whatsapp.net
+OWNER_JID=221771234567@s.whatsapp.net
 ```
 
 ---
