@@ -1588,23 +1588,27 @@ body.light-mode .sidebar-footer {
     }
     
     /* Responsive VPN Table-to-Card transformation */
-    .vpn-users-table-container {
-        overflow-x: visible; /* no need to scroll if we are card layout */
+    .vpn-users-table-container,
+    .vpn-table-container,
+    .card[style*="overflow-x: auto"] {
+        overflow-x: visible !important;
     }
     
-    .vpn-users-table thead {
+    .vpn-users-table thead,
+    .vpn-table thead {
         display: none;
     }
     
-    .vpn-users-table, 
-    .vpn-users-table tbody, 
-    .vpn-users-table tr, 
-    .vpn-users-table td {
+    .vpn-users-table, .vpn-table,
+    .vpn-users-table tbody, .vpn-table tbody,
+    .vpn-users-table tr, .vpn-table tr,
+    .vpn-users-table td, .vpn-table td {
         display: block;
         width: 100%;
     }
     
-    .vpn-users-table tr {
+    .vpn-users-table tr,
+    .vpn-table tr {
         background: rgba(13, 17, 30, 0.4);
         backdrop-filter: blur(10px);
         border: 1px solid var(--border-color);
@@ -1615,22 +1619,26 @@ body.light-mode .sidebar-footer {
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
     }
     
-    body.light-mode .vpn-users-table tr {
+    body.light-mode .vpn-users-table tr,
+    body.light-mode .vpn-table tr {
         background: rgba(255, 255, 255, 0.45);
         box-shadow: 0 6px 15px rgba(148, 163, 184, 0.06);
     }
     
-    .vpn-users-table tr:hover {
+    .vpn-users-table tr:hover,
+    .vpn-table tr:hover {
         background: rgba(13, 17, 30, 0.6);
         border-color: var(--border-hover);
         transform: translateY(-2px);
     }
     
-    body.light-mode .vpn-users-table tr:hover {
+    body.light-mode .vpn-users-table tr:hover,
+    body.light-mode .vpn-table tr:hover {
         background: rgba(255, 255, 255, 0.7);
     }
     
-    .vpn-users-table td {
+    .vpn-users-table td,
+    .vpn-table td {
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -1641,24 +1649,27 @@ body.light-mode .sidebar-footer {
         color: var(--text-primary);
     }
     
-    body.light-mode .vpn-users-table td {
+    body.light-mode .vpn-users-table td,
+    body.light-mode .vpn-table td {
         border-bottom: 1px solid rgba(0, 0, 0, 0.04);
     }
     
-    /* Hide label prefix for actions column */
-    .vpn-users-table td[data-label="Actions"]::before {
+    .vpn-users-table td[data-label="Actions"]::before,
+    .vpn-table td[data-label="Actions"]::before,
+    .vpn-users-table td:last-child::before,
+    .vpn-table td:last-child::before {
         display: none;
     }
     
-    /* Remove bottom border on the actions row */
-    .vpn-users-table td:last-child {
+    .vpn-users-table td:last-child,
+    .vpn-table td:last-child {
         border-bottom: none;
         padding-top: 1rem;
         justify-content: center;
     }
     
-    /* Format the data-label prefix on the left */
-    .vpn-users-table td::before {
+    .vpn-users-table td::before,
+    .vpn-table td::before {
         content: attr(data-label);
         font-weight: 600;
         color: var(--text-muted);
@@ -1670,7 +1681,8 @@ body.light-mode .sidebar-footer {
         flex-shrink: 0;
     }
     
-    .vpn-users-table .table-actions {
+    .vpn-users-table .table-actions,
+    .vpn-table .table-actions {
         width: 100%;
         display: flex;
         flex-wrap: wrap;
@@ -1678,12 +1690,40 @@ body.light-mode .sidebar-footer {
         justify-content: center;
     }
     
-    .vpn-users-table .table-actions .btn {
+    .vpn-users-table .table-actions .btn,
+    .vpn-table .table-actions .btn {
         flex: 1;
         min-width: 90px;
         padding: 0.5rem 0.65rem;
         font-size: 0.75rem;
         justify-content: center;
+    }
+
+    /* Section header: stack vertically on small screens */
+    .section-header,
+    .vpn-manager-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+    }
+    .section-header h2,
+    .vpn-manager-header h2 {
+        font-size: 1.1rem;
+    }
+    .section-header .btn,
+    .vpn-manager-header .btn {
+        width: 100%;
+    }
+
+    /* Service control card: ensure bot-card stacks properly */
+    .card.bot-card {
+        grid-template-columns: 1fr !important;
+        max-width: 100% !important;
+    }
+
+    /* Stats grid in service control card */
+    .bot-card-stats-col {
+        grid-template-columns: repeat(2, 1fr);
     }
 }
 

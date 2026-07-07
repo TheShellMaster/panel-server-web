@@ -1274,15 +1274,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 : `<button class="btn btn-sm btn-unsuspend" onclick="toggleUserStatus('${account._uid}', 'active')">Activer</button>`;
 
             return `<tr>
-                <td>${account.id}</td>
-                <td><strong>${escapeHTML(account.username)}</strong></td>
-                <td>${account.host || '—'}</td>
-                <td>${account.port}</td>
-                <td><span class="badge ${statusClass}">${statusLabel}</span></td>
-                <td>${account.max_connections || 1}</td>
-                <td>${usedFormatted} / ${limitFormatted}</td>
-                <td>${account.expires_at} ${daysText}</td>
-                <td>
+                <td data-label="ID">${account.id}</td>
+                <td data-label="Utilisateur"><strong>${escapeHTML(account.username)}</strong></td>
+                <td data-label="Hôte">${account.host || '—'}</td>
+                <td data-label="Port">${account.port}</td>
+                <td data-label="Statut"><span class="badge ${statusClass}">${statusLabel}</span></td>
+                <td data-label="Appareils">${account.max_connections || 1}</td>
+                <td data-label="Données">${usedFormatted} / ${limitFormatted}</td>
+                <td data-label="Expiration">${account.expires_at} ${daysText}</td>
+                <td data-label="Actions">
                     <div class="table-actions">
                         <button class="btn btn-sm btn-config" onclick="showVpnConfig('${account._uid}')">📋 Config</button>
                         <button class="btn btn-sm btn-edit" onclick="openEditModal('${account._uid}')">Éditer</button>
@@ -1337,13 +1337,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 : `<button class="btn btn-sm btn-unsuspend" onclick="toggleUserStatus('${user._uid}', 'active')">Activer</button>`;
 
             return `<tr>
-                <td><strong>${escapeHTML(user.username)}</strong></td>
-                <td><code class="password-code">${escapeHTML(user.password)}</code></td>
-                <td>${user.expires_at} ${daysText}</td>
-                <td>${user.max_connections}</td>
-                <td>${used} / ${limit}</td>
-                <td><span class="badge ${statusClass}">${statusLabel}</span></td>
-                <td>
+                <td data-label="Utilisateur"><strong>${escapeHTML(user.username)}</strong></td>
+                <td data-label="Mot de passe"><code class="password-code">${escapeHTML(user.password)}</code></td>
+                <td data-label="Expiration">${user.expires_at} ${daysText}</td>
+                <td data-label="Connexions Max">${user.max_connections}</td>
+                <td data-label="Consommation">${used} / ${limit}</td>
+                <td data-label="Statut"><span class="badge ${statusClass}">${statusLabel}</span></td>
+                <td data-label="Actions">
                     <div class="table-actions">
                         <button class="btn btn-sm btn-config" onclick="showVpnConfig('${user._uid}')">📋 Config</button>
                         <button class="btn btn-sm btn-edit" onclick="openEditModal('${user._uid}')">Éditer</button>
