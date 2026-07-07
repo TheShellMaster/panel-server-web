@@ -123,22 +123,20 @@ step4_binaries() {
 
     # --- zivpn ---
     if [ -f "$ZIVPN_BIN" ]; then
-        ok "zivpn déjà présent : $($ZIVPN_BIN --version 2>/dev/null || echo 'version inconnue')"
+        ok "zivpn déjà présent"
     else
-        info "Téléchargement de zivpn via l'installeur officiel..."
-        # Tente d'abord le binaire direct du projet arivpnstores
-        ARCH=$(uname -m)
-        case "$ARCH" in
-            x86_64|amd64) ZIVPN_URL="https://github.com/arivpnstores/udp-zivpn/raw/main/zivpn" ;;
-            aarch64|arm64) ZIVPN_URL="https://github.com/arivpnstores/udp-zivpn/raw/main/zivpn-arm64" ;;
-            armv7l|armhf)  ZIVPN_URL="https://github.com/arivpnstores/udp-zivpn/raw/main/zivpn-arm" ;;
-            *) warn "Architecture non supportée: $ARCH. Téléchargez manuellement." ;;
-        esac
-        if [ -n "${ZIVPN_URL:-}" ]; then
-            curl -fsSL "$ZIVPN_URL" -o "$ZIVPN_BIN" && chmod +x "$ZIVPN_BIN" && ok "zivpn téléchargé" || {
-                warn "Échec du téléchargement direct. Utilisez l'installeur :"
-                warn "  bash <(curl -fsSL https://raw.githubusercontent.com/arivpnstores/udp-zivpn/main/install.sh)"
-            }
+        info "Installation de zivpn via l'installeur officiel..."
+        # Le binaire n'est pas disponible en téléchargement direct.
+        # On utilise l'installeur du projet arivpnstores/zahidbd2
+        bash <(curl -fsSL https://raw.githubusercontent.com/arivpnstores/udp-zivpn/main/install.sh) 2>&1 | tail -3 || {
+            warn "1er installeur échoué, tentative avec zi.sh..."
+            bash <(curl -fsSL https://raw.githubusercontent.com/zahidbd2/udp-zivpn/main/zi.sh) 2>&1 | tail -3 || true
+        }
+        if [ -f "$ZIVPN_BIN" ]; then
+            ok "zivpn installé"
+        else
+            warn "zivpn non trouvé. Installez manuellement :"
+            warn "  bash <(curl -fsSL https://raw.githubusercontent.com/arivpnstores/udp-zivpn/main/install.sh)"
         fi
     fi
 
@@ -148,19 +146,10 @@ step4_binaries() {
     else
         mkdir -p /root/udp
         info "Téléchargement de udp-custom..."
-        UDP_VERSION="1.4"
-        ARCH=$(uname -m)
-        case "$ARCH" in
-            x86_64|amd64) UDP_URL="https://github.com/ePro-Dev-Team/udp-custom/releases/download/v${UDP_VERSION}/udp-custom-linux-amd64" ;;
-            aarch64|arm64) UDP_URL="https://github.com/ePro-Dev-Team/udp-custom/releases/download/v${UDP_VERSION}/udp-custom-linux-arm64" ;;
-            *) warn "Architecture non supportée: $ARCH" ;;
-        esac
-        if [ -n "${UDP_URL:-}" ]; then
-            curl -fsSL "$UDP_URL" -o "$UDP_BIN" && chmod +x "$UDP_BIN" && ok "udp-custom téléchargé" || {
-                warn "Échec du téléchargement. Téléchargez manuellement depuis :"
-                warn "  https://github.com/ePro-Dev-Team/udp-custom/releases"
-            }
-        fi
+        curl -fsSL "https://github.com/Haris131/UDP-Custom/raw/main/udp-custom-linux-amd64" -o "$UDP_BIN" && chmod +x "$UDP_BIN" && ok "udp-custom téléchargé" || {
+            warn "Échec direct, tentative via installeur..."
+            curl -fsSL "https://raw.githubusercontent.com/Haris131/UDP-Custom/main/udp-custom.sh" | bash 2>&1 | tail -3 || true
+        }
     fi
 
     # --- cloudflared ---
