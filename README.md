@@ -1,32 +1,21 @@
 # TNS-Panel
 
-Panel de monitoring VPN tout-en-un avec tableau de bord web, bot WhatsApp, ZiVPN, UDP-Custom, n8n, et Hermes Agent.
+Panel de monitoring VPN tout-en-un. Installation 100% automatique sur Ubuntu 24.04.
 
-## Architecture
+## Branches
 
-```
-Port 2053  ─── nginx ──→ /var/www/vpn_panel/ (SPA)
-                   │
-                   └── /api/ ──→ localhost:3000 (Express backend)
-                                      │
-                                      ├── SQLite (vpn_users, udpcustom_accounts)
-                                      ├── PM2 (whatsapp-bot)
-                                      ├── Docker (n8n :5678)
-                                      └── Direct (Hermes :9119)
+- **`main`** → serveurs x86_64 / amd64
+- **`arm`** → serveurs ARM64 / ARM (Raspberry Pi, AWS Graviton, Oracle ARM)
 
-ZiVPN      ── systemd ──→ /usr/local/bin/zivpn :443/UDP
-UDP-Custom ── systemd ──→ /root/udp/udp-custom :36712/UDP
+```bash
+# x86_64
+git clone -b main https://github.com/TheShellMaster/panel-server-web.git
+
+# ARM
+git clone -b arm https://github.com/TheShellMaster/panel-server-web.git
 ```
 
 ## Installation
-
-### Prérequis
-
-- Ubuntu 24.04 LTS (Noble) — x86_64
-- Utilisateur `ubuntu` avec sudo NOPASSWD (ou exécuter en root)
-- Ports ouverts : 2053/TCP, 443/UDP, 36712/UDP, 5678/TCP, 9119/TCP
-
-### Auto-install (serveur vierge)
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
@@ -35,95 +24,235 @@ cd /opt/tns-panel
 sudo bash install.sh
 ```
 
-### Après installation
+L'installateur vous pose des questions. Répondre `Y` (oui) à chaque service désiré.
 
-```
-1. Éditer /home/ubuntu/server_dashboard/.env
-   → ADMIN_PASSWORD=<mot_de_passe_admin>
-   → OWNER_JID=<numéro_whatsapp@s.whatsapp.net>
+> **ATTENTION** : si vous installez sur ARM, utilisez la branche `arm`. Les binaires ZiVPN et cloudflared sont disponibles pour ARM, mais UDP-Custom est x86_64 uniquement.
 
-2. Éditer /home/ubuntu/bot_whatsapp/.env
-   → GEMINI_API_KEY=<clé_API_Google_Gemini>
-   → OWNER_JID=<numéro_whatsapp@s.whatsapp.net>
+---
 
-3. Cloner le bot WhatsApp (repo privé) :
-   git clone https://<TOKEN>@github.com/TheShellMaster/BOT_WHATSAPP.git /home/ubuntu/bot_whatsapp
-   cd /home/ubuntu/bot_whatsapp && npm install
+## GUIDE POST-INSTALL — Tout ce que vous devez remplir
 
-4. Scanner le QR code WhatsApp :
-   pm2 start /home/ubuntu/bot_whatsapp/index.js --name whatsapp-bot
-   pm2 logs whatsapp-bot
+Après installation, 8 éléments sont à configurer manuellement. Suivez dans l'ordre.
 
-5. Accéder au panel : http://<IP_SERVEUR>:2053
-```
+---
 
-## Fichiers de configuration
+### 1. Mot de passe admin du panel
 
-| Fichier | Rôle |
-|---|---|
-| `/var/www/vpn_panel/index.html` | Frontend SPA |
-| `/var/www/vpn_panel/index.js` | Logique JS frontend |
-| `/var/www/vpn_panel/style.css` | Styles CSS |
-| `/home/ubuntu/server_dashboard/server.js` | Backend Express (API REST, CRUD VPN, synchronisation) |
-| `/home/ubuntu/server_dashboard/.env` | Variables d'environnement backend |
-| `/home/ubuntu/server_dashboard/database.db` | Base SQLite (vpn_users, udpcustom_accounts) |
-| `/etc/zivpn/config.json` | Configuration ZiVPN |
-| `/root/udp/config.json` | Configuration UDP-Custom |
-| `/etc/nginx/sites-available/vpn_panel` | Configuration nginx |
+L'installateur a généré un mot de passe aléatoire. Il est affiché en fin d'installation.
 
-## Ports
+Si vous voulez le changer :
 
-| Port | Service | Type |
-|---|---|---|
-| 22 | SSH | TCP |
-| 80 | Nginx HTTP (redirigé) | TCP |
-| 2053 | Panel web (nginx) | TCP |
-| 3000 | Backend API (Express) | TCP |
-| 443 | ZiVPN | UDP |
-| 36712 | UDP-Custom | UDP |
-| 5678 | n8n (Docker) | TCP |
-| 9119 | Hermes Agent | TCP |
+**Fichier :** `/home/ubuntu/server_dashboard/.env`
 
-## Services
-
-| Service | Type | Gestion |
-|---|---|---|
-| nginx | systemd | `systemctl restart nginx` |
-| zivpn | systemd | `systemctl restart zivpn` |
-| udp-custom | systemd | `systemctl restart udp-custom` |
-| server-dashboard | PM2 | `pm2 restart server-dashboard` |
-| whatsapp-bot | PM2 | `pm2 start whatsapp-bot` |
-| n8n | Docker | `docker start n8n` |
-
-## Structure du dépôt
-
-```
-panel-server-web/
-├── install.sh          ← Auto-installateur (lancer en root)
-├── frontend/
-│   ├── index.html      ← Page principale SPA
-│   ├── index.js        ← Logique JS
-│   └── style.css       ← Styles
-├── backend/
-│   ├── server.js       ← API Express
-│   └── package.json    ← Dépendances npm
-├── AGENTS.md           ← Instructions pour l'IA
-└── README.md           ← Ce fichier
+```bash
+sudo nano /home/ubuntu/server_dashboard/.env
 ```
 
-## Développement
+**Ligne à modifier :**
+```
+ADMIN_PASSWORD=aB3xK9mP2vR7wQ1n   ← remplacez par votre mot de passe
+```
 
-Pour modifier le frontend : éditer les fichiers dans `frontend/` et relancer l'install (étape 6) ou les copier manuellement dans `/var/www/vpn_panel/`.
-
-Pour modifier le backend : éditer `backend/server.js` et redémarrer :
+**Redémarrage du backend :**
 ```bash
 pm2 restart server-dashboard
 ```
 
+---
+
+### 2. Clé API Google Gemini (obligatoire pour le WhatsApp Bot)
+
+**Où créer la clé :** https://aistudio.google.com/app/apikey
+
+1. Connectez-vous avec un compte Google
+2. Cliquez sur **"Create API Key"**
+3. Copiez la clé (ex: `AIzaSyB...`)
+
+**Fichier :** `/home/ubuntu/bot_whatsapp/.env`
+
+```bash
+sudo nano /home/ubuntu/bot_whatsapp/.env
+```
+
+**Ligne à modifier :**
+```
+GEMINI_API_KEY=    ← collez votre clé ici
+```
+
+---
+
+### 3. Votre numéro WhatsApp (OWNER_JID)
+
+C'est votre numéro personnel. Le bot n'écoutera que vos messages.
+
+**Format :** `VOTRE_NUMERO@s.whatsapp.net`
+
+Exemple : si votre numéro est `+237 659 554 712` → `237659554712@s.whatsapp.net`
+
+**Fichier :** `/home/ubuntu/bot_whatsapp/.env`
+
+```bash
+sudo nano /home/ubuntu/bot_whatsapp/.env
+```
+
+**Ligne à modifier :**
+```
+OWNER_JID=    ← mettez votre JID ici (ex: 237659554712@s.whatsapp.net)
+```
+
+**Même chose dans le backend :**
+
+**Fichier :** `/home/ubuntu/server_dashboard/.env`
+
+```bash
+sudo nano /home/ubuntu/server_dashboard/.env
+```
+
+Ajoutez la ligne :
+```
+OWNER_JID=237659554712@s.whatsapp.net
+```
+
+---
+
+### 4. Définition des mots de passe ZiVPN
+
+L'installateur crée `/etc/zivpn/config.json` avec un mot de passe par défaut (le même que l'admin password).
+
+Les utilisateurs VPN se créent depuis le panel web (section ZiVPN). Le mot de passe par défaut dans le fichier de config est celui de l'admin.
+
+**Fichier :** `/etc/zivpn/config.json`
+
+```bash
+sudo nano /etc/zivpn/config.json
+```
+
+```json
+{
+  "listen": ":443",
+  "auth": {
+    "mode": "passwords",
+    "config": ["admin1234"]     ← mot de passe admin ZiVPN
+  }
+}
+```
+
+**Redémarrage :**
+```bash
+sudo systemctl restart zivpn
+```
+
+---
+
+### 5. Scanner le QR code WhatsApp
+
+Le bot est enregistré dans PM2 mais n'est pas encore connecté à WhatsApp.
+
+```bash
+# Voir le QR code à scanner
+pm2 logs whatsapp-bot
+```
+
+1. Ouvrez WhatsApp sur votre téléphone
+2. Menu → Appareils liés → Lier un appareil
+3. Scannez le QR qui apparaît dans le terminal
+4. Le bot est connecté !
+
+Pour vérifier :
+```bash
+pm2 status
+```
+
+---
+
+### 6. Ports à ouvrir dans le firewall
+
+Si votre serveur a un pare-feu (AWS Security Group, OVH, etc.), ouvrez ces ports :
+
+| Port | Protocole | Service |
+|---|---|---|
+| 2053 | TCP | Panel web |
+| 443 | UDP | ZiVPN |
+| 36712 | UDP | UDP-Custom |
+| 5678 | TCP | n8n |
+| 9119 | TCP | Hermes (si installé) |
+
+Sur le serveur (UFW) :
+```bash
+sudo ufw allow 2053/tcp
+sudo ufw allow 443/udp
+sudo ufw allow 36712/udp
+sudo ufw allow 5678/tcp
+```
+
+---
+
+### 7. Créer des utilisateurs VPN
+
+Connectez-vous au panel : `http://VOTRE_IP:2053`
+
+**Onglet ZiVPN :**
+- Cliquez "Ajouter utilisateur"
+- Remplissez le nom d'utilisateur et mot de passe
+- Validez → l'utilisateur est ajouté dans la config ZiVPN et le service redémarré
+
+**Onglet UDP-Custom :**
+- Cliquez "Ajouter compte"
+- Remplissez les identifiants
+- Validez → l'utilisateur est créé dans le système + iptables configuré
+
+---
+
+### 8. n8n (automatisation)
+
+n8n est pré-installé et tourne sur le port 5678.
+
+Accès : `http://VOTRE_IP:5678`
+
+Première connexion :
+- Créez un compte admin (local)
+- Vous pouvez connecter n8n à WhatsApp, email, base de données, etc.
+
+---
+
+## Résumé des fichiers à connaître
+
+| Fichier | Ce qu'il contient | Commande pour l'éditer |
+|---|---|---|
+| `/home/ubuntu/server_dashboard/.env` | Mot de passe admin, IPs, OWNER_JID | `sudo nano` |
+| `/home/ubuntu/bot_whatsapp/.env` | Clé Gemini, OWNER_JID, IPs | `sudo nano` |
+| `/etc/zivpn/config.json` | Config ZiVPN (port, cert, passwords) | `sudo nano` |
+| `/root/udp/config.json` | Config UDP-Custom | `sudo nano` |
+| `/var/www/vpn_panel/index.html` | Page d'accueil du panel | `sudo nano` |
+| `/home/ubuntu/server_dashboard/server.js` | API backend (1341 lignes) | `sudo nano` |
+| `/etc/nginx/sites-available/vpn_panel` | Config nginx (port 2053) | `sudo nano` |
+
+## Résumé des commandes de gestion
+
+```
+pm2 status                    → voir tous les processus PM2
+pm2 logs whatsapp-bot         → voir les logs du bot WhatsApp
+pm2 restart whatsapp-bot      → redémarrer le bot
+pm2 restart server-dashboard  → redémarrer le backend
+
+systemctl status zivpn        → état de ZiVPN
+systemctl restart zivpn       → redémarrer ZiVPN
+systemctl status udp-custom   → état de UDP-Custom
+systemctl restart udp-custom  → redémarrer UDP-Custom
+
+docker ps                     → voir les conteneurs
+docker logs tns-n8n           → logs de n8n
+docker restart tns-n8n        → redémarrer n8n
+
+sudo nginx -t                 → tester la config nginx
+sudo systemctl reload nginx   → recharger nginx
+```
+
 ## Dépannage
 
-- **503 Service Unavailable** : nginx tourne mais le backend Express n'est pas démarré. Vérifier avec `pm2 status`.
-- **ZiVPN ne répond pas** : `systemctl status zivpn` et vérifier `/etc/zivpn/config.json`.
-- **UDP-Custom ne répond pas** : `systemctl status udp-custom` et vérifier `/root/udp/config.json`.
-- **WhatsApp Bot ne se connecte pas** : `pm2 logs whatsapp-bot` pour voir le QR code.
-- **n8n inaccessible** : `docker ps -a` pour vérifier le conteneur.
+- **Le panel affiche 503** → `pm2 restart server-dashboard`
+- **Le bot ne répond pas** → `pm2 logs whatsapp-bot` (vérifier le QR et GEMINI_API_KEY)
+- **ZiVPN ne démarre pas** → `systemctl status zivpn` et vérifier le binaire
+- **UDP-Custom ne démarre pas** → `systemctl status udp-custom` (x86_64 uniquement)
+- **n8n inaccessible** → `docker restart tns-n8n`
+- **Port déjà utilisé** → `sudo lsof -i :PORT`
