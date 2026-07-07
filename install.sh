@@ -8,7 +8,24 @@ set -euo pipefail
 # =============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
-export USER_HOME=/home/ubuntu
+
+# =============================================================================
+# Détection automatique des paramètres système
+# =============================================================================
+detect_system() {
+    export HOSTNAME=$(hostname)
+    export ARCH=$(uname -m)
+    export RUN_USER="${SUDO_USER:-$(who am i | awk '{print $1}')}"
+    export RUN_USER="${RUN_USER:-root}"
+    export USER_HOME=$(eval echo "~$RUN_USER")
+    export PRIVATE_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    export PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "$PRIVATE_IP")
+    export NET_IFACE=$(ip route get 8.8.8.8 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p' || echo "eth0")
+    export DISTRO=$(grep -oP '^PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null || echo "Ubuntu 24.04")
+}
+
+detect_system
+
 export BACKEND_DIR="$USER_HOME/server_dashboard"
 export FRONTEND_DIR="/var/www/vpn_panel"
 export BOT_DIR="$USER_HOME/bot_whatsapp"
@@ -19,6 +36,10 @@ export CLOUDFLARED_BIN="$USER_HOME/cloudflared"
 export ZIVPN_CONFIG="/etc/zivpn/config.json"
 export UDP_CONFIG="/root/udp/config.json"
 export DB_PATH="$BACKEND_DIR/database.db"
+
+# Générer un mot de passe admin aléatoire si ADMIN_PASSWORD n'est pas déjà défini
+export ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c16)}"
+export OWNER_JID="${OWNER_JID:-}"
 
 # Couleurs
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -99,7 +120,7 @@ step3_docker() {
         ok "Docker déjà installé : $(docker --version)"
     else
         curl -fsSL https://get.docker.com | bash
-        usermod -aG docker ubuntu 2>/dev/null || true
+        usermod -aG docker "$RUN_USER" 2>/dev/null || true
         systemctl enable docker
         systemctl start docker
         ok "Docker installé"
@@ -182,15 +203,18 @@ step5_users() {
     groupadd -f vpnusers
     ok "Groupe vpnusers prêt"
 
-    # S'assurer que l'utilisateur ubuntu existe
-    id ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu
-    usermod -aG sudo,docker ubuntu
+    # S'assurer que l'utilisateur principal existe
+    RUN_USER_HOME=$(eval echo "~$RUN_USER" 2>/dev/null || echo "/home/$RUN_USER")
+    if ! id "$RUN_USER" &>/dev/null; then
+        useradd -m -s /bin/bash "$RUN_USER"
+    fi
+    usermod -aG sudo,docker "$RUN_USER"
 
-    # Sudo NOPASSWD pour ubuntu
-    if [ ! -f /etc/sudoers.d/ubuntu ]; then
-        echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu
-        chmod 440 /etc/sudoers.d/ubuntu
-        ok "Sudo NOPASSWD configuré pour ubuntu"
+    # Sudo NOPASSWD
+    if [ ! -f "/etc/sudoers.d/$RUN_USER" ]; then
+        echo "$RUN_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$RUN_USER"
+        chmod 440 "/etc/sudoers.d/$RUN_USER"
+        ok "Sudo NOPASSWD configuré pour $RUN_USER"
     else
         ok "Sudo déjà configuré"
     fi
@@ -222,7 +246,7 @@ step6_directories() {
         warn "Placez-les dans: frontend/ et backend/ puis relancez"
     fi
 
-    chown -R ubuntu:ubuntu "$FRONTEND_DIR" "$BACKEND_DIR" "$USER_HOME/.pm2" 2>/dev/null || true
+    chown -R "$RUN_USER":"$RUN_USER" "$FRONTEND_DIR" "$BACKEND_DIR" "$USER_HOME/.pm2" 2>/dev/null || true
     ok "Répertoires créés"
 }
 
@@ -234,19 +258,22 @@ step7_configs() {
 
     # --- .env backend ---
     if [ ! -f "$BACKEND_DIR/.env" ]; then
-        cat > "$BACKEND_DIR/.env" << 'EOF'
+        cat > "$BACKEND_DIR/.env" << EOF
 PORT=3000
 DATABASE_PATH=./database.db
-ADMIN_PASSWORD=admin1234
-ZIVPN_CONFIG_PATH=/etc/zivpn/config.json
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+PUBLIC_IP=${PUBLIC_IP}
+PRIVATE_IP=${PRIVATE_IP}
+HOSTNAME=${HOSTNAME}
+ZIVPN_CONFIG_PATH=${ZIVPN_CONFIG}
 BOT_PM2_NAME=whatsapp-bot
-BOT_LOGS_OUT_PATH=/home/ubuntu/.pm2/logs/whatsapp-bot-out.log
-BOT_LOGS_ERR_PATH=/home/ubuntu/.pm2/logs/whatsapp-bot-error.log
+BOT_LOGS_OUT_PATH=${USER_HOME}/.pm2/logs/whatsapp-bot-out.log
+BOT_LOGS_ERR_PATH=${USER_HOME}/.pm2/logs/whatsapp-bot-error.log
 EGRESS_LIMIT_GB=100
 N8N_PORT=5678
-N8N_LOG_PATH=/home/ubuntu/.pm2/logs/n8n-out.log
-N8N_ERR_PATH=/home/ubuntu/.pm2/logs/n8n-error.log
-HERMES_LOG_PATH=/home/ubuntu/.hermes/logs/hermes-tunnel.log
+N8N_LOG_PATH=${USER_HOME}/.pm2/logs/n8n-out.log
+N8N_ERR_PATH=${USER_HOME}/.pm2/logs/n8n-error.log
+HERMES_LOG_PATH=${USER_HOME}/.hermes/logs/hermes-tunnel.log
 EOF
         ok ".env backend créé"
     else
@@ -347,7 +374,7 @@ EOF
     systemctl daemon-reload
 
     # --- Nginx: vpn_panel ---
-    cat > /etc/nginx/sites-available/vpn_panel << 'EOF'
+    cat > /etc/nginx/sites-available/vpn_panel << EOF
 server {
     listen 2053 default_server;
     listen [::]:2053 default_server;
@@ -355,17 +382,17 @@ server {
     root /var/www/vpn_panel;
     index index.html;
 
-    server_name _;
+    server_name ${PUBLIC_IP} ${PRIVATE_IP} ${HOSTNAME} _;
 
     location / {
-        try_files $uri $uri/ /index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 
     location /api/ {
         proxy_pass http://127.0.0.1:3000/api/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
     }
 }
 EOF
@@ -405,7 +432,7 @@ EOF
 
     cd "$BACKEND_DIR"
     if [ ! -d node_modules ]; then
-        su - ubuntu -c "cd $BACKEND_DIR && npm install --omit=dev --quiet"
+        su - "$RUN_USER" -c "cd $BACKEND_DIR && npm install --omit=dev --quiet"
         ok "Dépendances backend installées"
     else
         ok "Node_modules backend déjà présents"
@@ -421,25 +448,39 @@ step9_whatsapp_bot() {
     if [ -d "$BOT_DIR" ]; then
         ok "WhatsApp Bot déjà présent"
     else
-        warn "Le repo BOT_WHATSAPP est privé — clone non disponible publiquement."
-        warn "Créez le dossier manuellement ou fournissez un token GitHub :"
-        warn "  git clone https://<TOKEN>@github.com/TheShellMaster/BOT_WHATSAPP.git $BOT_DIR"
-        mkdir -p "$BOT_DIR"/{commands,utils,baileys_auth,data} 2>/dev/null || true
+        info "Tentative de clonage du WhatsApp Bot..."
+        BOT_REPO_URL="https://github.com/TheShellMaster/BOT_WHATSAPP.git"
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+            git clone "https://${GITHUB_TOKEN}@github.com/TheShellMaster/BOT_WHATSAPP.git" "$BOT_DIR" 2>/dev/null && ok "WhatsApp Bot cloné avec token" || {
+                warn "Clone avec token échoué, clone anonyme..."
+                git clone "$BOT_REPO_URL" "$BOT_DIR" 2>/dev/null && ok "WhatsApp Bot cloné" || {
+                    warn "Clone échoué (repo privé). Dossier créé vide."
+                    mkdir -p "$BOT_DIR"/{commands,utils,baileys_auth,data}
+                }
+            }
+        else
+            git clone "$BOT_REPO_URL" "$BOT_DIR" 2>/dev/null || {
+                warn "Clone échoué (repo privé). Dossier créé vide."
+                mkdir -p "$BOT_DIR"/{commands,utils,baileys_auth,data}
+            }
+        fi
     fi
 
     # .env WhatsApp Bot
     if [ ! -f "$BOT_DIR/.env" ]; then
-        cat > "$BOT_DIR/.env" << 'EOF'
+        cat > "$BOT_DIR/.env" << EOF
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.0-flash-exp
-ADMIN_PASSWORD=admin1234
-OWNER_JID=237XXXXXXXXX@s.whatsapp.net  # Remplacez par votre numéro WhatsApp
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+OWNER_JID=${OWNER_JID}
+SERVER_PUBLIC_IP=${PUBLIC_IP}
+SERVER_PRIVATE_IP=${PRIVATE_IP}
 EOF
-        ok ".env WhatsApp Bot créé (éditez GEMINI_API_KEY)"
+        ok ".env WhatsApp Bot créé (éditez GEMINI_API_KEY et OWNER_JID)"
     fi
 
     if [ -f "$BOT_DIR/package.json" ] && [ ! -d "$BOT_DIR/node_modules" ]; then
-        su - ubuntu -c "cd $BOT_DIR && npm install --omit=dev --quiet"
+        su - "$RUN_USER" -c "cd $BOT_DIR && npm install --omit=dev --quiet"
         ok "Dépendances WhatsApp Bot installées"
     else
         ok "WhatsApp Bot déjà configuré"
@@ -455,8 +496,8 @@ step10_hermes() {
     if [ -d "$HERMES_DIR" ]; then
         ok "Hermes déjà cloné"
     else
-        su - ubuntu -c "mkdir -p '$USER_HOME/.hermes'"
-        su - ubuntu -c "git clone https://github.com/NousResearch/hermes-agent.git '$HERMES_DIR'" || {
+        su - "$RUN_USER" -c "mkdir -p '$USER_HOME/.hermes'"
+        su - "$RUN_USER" -c "git clone https://github.com/NousResearch/hermes-agent.git '$HERMES_DIR'" || {
             warn "Clone Hermes échoué (skip)"
             return
         }
@@ -466,19 +507,19 @@ step10_hermes() {
         ok "Virtualenv Hermes déjà présent"
     else
         if [ -f "$HERMES_DIR/setup-hermes.sh" ]; then
-            su - ubuntu -c "cd '$HERMES_DIR' && bash setup-hermes.sh" || {
+            su - "$RUN_USER" -c "cd '$HERMES_DIR' && bash setup-hermes.sh" || {
                 info "Fallback: création venv manuelle..."
-                su - ubuntu -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e ." || true
+                su - "$RUN_USER" -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e ." || true
             }
         else
-            su - ubuntu -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e ." || true
+            su - "$RUN_USER" -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e ." || true
         fi
         ok "Virtualenv Hermes installé"
     fi
 
     # Répertoire logs Hermes
     mkdir -p "$USER_HOME/.hermes/logs"
-    chown -R ubuntu:ubuntu "$USER_HOME/.hermes" 2>/dev/null || true
+    chown -R "$RUN_USER":"$RUN_USER" "$USER_HOME/.hermes" 2>/dev/null || true
 }
 
 # =============================================================================
@@ -487,28 +528,25 @@ step10_hermes() {
 step11_iptables() {
     info "=== 11/12 : Règles iptables ==="
 
-    local IFACE
-    IFACE=$(ip route get 8.8.8.8 | sed -n 's/.*dev \([^ ]*\).*/\1/p' || echo "enX0")
-
     # Nettoyage des anciennes règles
-    iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 443 -j ACCEPT 2>/dev/null || true
-    iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :443 2>/dev/null || true
-    iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null || true
+    iptables -t nat -D PREROUTING -i "$NET_IFACE" -p udp --dport 443 -j ACCEPT 2>/dev/null || true
+    iptables -t nat -D PREROUTING -i "$NET_IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :443 2>/dev/null || true
+    iptables -t nat -D POSTROUTING -o "$NET_IFACE" -j MASQUERADE 2>/dev/null || true
 
     # ZiVPN : port range 6000-19999 -> 443
-    iptables -t nat -I PREROUTING 1 -i "$IFACE" -p udp --dport 443 -j ACCEPT
-    iptables -t nat -I PREROUTING 1 -i "$IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :443
-    iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+    iptables -t nat -I PREROUTING 1 -i "$NET_IFACE" -p udp --dport 443 -j ACCEPT
+    iptables -t nat -I PREROUTING 1 -i "$NET_IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :443
+    iptables -t nat -A POSTROUTING -o "$NET_IFACE" -j MASQUERADE
 
     # UDP-Custom catch-all
-    iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 1:65535 -j DNAT --to-destination :36712 2>/dev/null || true
+    iptables -t nat -A PREROUTING -i "$NET_IFACE" -p udp --dport 1:65535 -j DNAT --to-destination :36712 2>/dev/null || true
 
     # Sauvegarde iptables
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     netfilter-persistent save 2>/dev/null || true
 
-    ok "Règles iptables configurées (interface: $IFACE)"
+    ok "Règles iptables configurées (interface: $NET_IFACE)"
 }
 
 # =============================================================================
@@ -534,20 +572,22 @@ step12_start() {
 
     # PM2 server-dashboard
     if [ -f "$BACKEND_DIR/server.js" ]; then
-        su - ubuntu -c "cd $BACKEND_DIR && pm2 start server.js --name server-dashboard 2>/dev/null || pm2 restart server-dashboard 2>/dev/null || true"
-        su - ubuntu -c "pm2 save"
+        su - "$RUN_USER" -c "cd $BACKEND_DIR && pm2 start server.js --name server-dashboard 2>/dev/null || pm2 restart server-dashboard 2>/dev/null || true"
+        su - "$RUN_USER" -c "pm2 save"
         ok "server-dashboard démarré (PM2)"
     else
         warn "server.js manquant, démarrage PM2 ignoré"
     fi
 
     # PM2 startup
-    su - ubuntu -c "pm2 startup systemd -u ubuntu --hp $USER_HOME 2>/dev/null || true"
+    su - "$RUN_USER" -c "pm2 startup systemd -u $RUN_USER --hp $USER_HOME 2>/dev/null || true"
 
     ok "Installation terminée !"
     info "======================================"
-    info "  Panel : http://$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'):2053"
+    info "  Panel : http://${PUBLIC_IP}:2053"
     info "  API   : http://localhost:3000/api/stats"
+    info "  SSH   : ${RUN_USER}@${PUBLIC_IP}"
+    info "  Admin : ${ADMIN_PASSWORD}"
     info "======================================"
 }
 
@@ -560,6 +600,16 @@ main() {
     echo -e "${CYAN}║         TNS-Panel — Auto-Installateur        ║${NC}"
     echo -e "${CYAN}║     Déploie le panel VPN + tous les services ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${GREEN}Détection système :${NC}"
+    echo -e "  Distribution : ${DISTRO}"
+    echo -e "  Architecture : ${ARCH}"
+    echo -e "  Hostname     : ${HOSTNAME}"
+    echo -e "  Utilisateur  : ${RUN_USER} (${USER_HOME})"
+    echo -e "  IP Publique  : ${PUBLIC_IP}"
+    echo -e "  IP Privée    : ${PRIVATE_IP}"
+    echo -e "  Interface    : ${NET_IFACE}"
+    echo -e "  Admin Pass   : ${ADMIN_PASSWORD}"
     echo ""
 
     step1_system
@@ -581,10 +631,15 @@ main() {
     echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${YELLOW}APRÈS INSTALL :${NC}"
-    echo -e "  1. Éditer ${CYAN}$BOT_DIR/.env${NC} → clé GEMINI_API_KEY"
-    echo -e "  2. Si zivpn/udp-custom manquent, télécharger les binaires"
-    echo -e "  3. Connecter WhatsApp Bot : ${CYAN}pm2 start whatsapp-bot${NC} puis scanner QR"
-    echo -e "  4. Accéder au panel : ${CYAN}http://<IP_SERVEUR>:2053${NC}"
+    echo -e "  ${CYAN}1. Panel : http://${PUBLIC_IP}:2053 (admin: ${ADMIN_PASSWORD})${NC}"
+    echo -e "  ${CYAN}2. SSH   : ${RUN_USER}@${PUBLIC_IP}${NC}"
+    if [ ! -d "$BOT_DIR" ] || [ ! -f "$BOT_DIR/package.json" ]; then
+    echo -e "  ${YELLOW}3. WhatsApp Bot : clone manuel requis (repo privé)${NC}"
+    echo -e "     git clone https://<TOKEN>@github.com/TheShellMaster/BOT_WHATSAPP.git $BOT_DIR"
+    else
+    echo -e "  ${CYAN}3. WhatsApp Bot : pm2 start whatsapp-bot${NC}"
+    fi
+    echo -e "  ${CYAN}4. Définir GEMINI_API_KEY dans $BOT_DIR/.env${NC}"
     echo ""
 }
 
