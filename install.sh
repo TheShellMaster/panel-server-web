@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# =============================================================================
-#  TNS-Panel — Auto-Installateur Universel
-#  Déploie TOUT le panel VPN Dashboard + ses services sur un serveur vierge
-#  Ubuntu 24.04 LTS (Noble) — x86_64
-# =============================================================================
-
 export DEBIAN_FRONTEND=noninteractive
 
 # =============================================================================
@@ -22,8 +16,13 @@ detect_system() {
     export PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "$PRIVATE_IP")
     export NET_IFACE=$(ip route get 8.8.8.8 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p' || echo "eth0")
     export DISTRO=$(grep -oP '^PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null || echo "Ubuntu 24.04")
+    case "$ARCH" in
+        x86_64|amd64)  export ARCH_ALT="amd64" ;;
+        aarch64|arm64) export ARCH_ALT="arm64" ;;
+        armv7l|armhf)  export ARCH_ALT="arm"   ;;
+        *)             export ARCH_ALT="$ARCH"  ;;
+    esac
 }
-
 detect_system
 
 export BACKEND_DIR="$USER_HOME/server_dashboard"
@@ -36,8 +35,10 @@ export CLOUDFLARED_BIN="$USER_HOME/cloudflared"
 export ZIVPN_CONFIG="/etc/zivpn/config.json"
 export UDP_CONFIG="/root/udp/config.json"
 export DB_PATH="$BACKEND_DIR/database.db"
+export N8N_CONTAINER="tns-n8n"
+export CF_TUNNEL_N8N_PID="$USER_HOME/.cloudflared/n8n-tunnel.pid"
+export CF_TUNNEL_HERMES_PID="$USER_HOME/.cloudflared/hermes-tunnel.pid"
 
-# Générer un mot de passe admin aléatoire si ADMIN_PASSWORD n'est pas déjà défini
 export ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c16)}"
 export OWNER_JID="${OWNER_JID:-}"
 
@@ -48,10 +49,23 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERR]${NC}   $*"; }
 
-# Vérification root
+ask() {
+    local msg="$1" default="${2:-y}" answer
+    local prompt="[Y/n]"
+    [ "$default" = "n" ] && prompt="[y/N]"
+    echo -ne "${CYAN}?${NC} $msg $prompt "
+    read -r answer
+    answer="${answer:-$default}"
+    [[ "$answer" =~ ^[YyOo1] ]]
+}
+
 if [ "$(id -u)" -ne 0 ]; then
     err "Ce script doit être exécuté en tant que root (sudo)."
     exit 1
+fi
+
+if [ "$ARCH_ALT" != "amd64" ] && [ "$ARCH_ALT" != "arm64" ] && [ "$ARCH_ALT" != "arm" ]; then
+    warn "Architecture non reconnue: $ARCH. L'installation peut échouer."
 fi
 
 # =============================================================================
@@ -59,7 +73,6 @@ fi
 # =============================================================================
 step1_system() {
     info "=== 1/12 : Paquets système ==="
-
     apt-get update -qq
     apt-get install -y -qq \
         nginx git curl wget openssl sqlite3 \
@@ -68,10 +81,8 @@ step1_system() {
         python3-pip python3-requests python3-yaml \
         ca-certificates gnupg lsb-release \
         htop net-tools jq
-
     ok "Paquets système installés"
 
-    # Swap 2GB si absent
     if ! swapon --show 2>/dev/null | grep -q .; then
         info "Création du swap 2GB..."
         fallocate -l 2G /swapfile
@@ -84,7 +95,6 @@ step1_system() {
         ok "Swap déjà présent"
     fi
 
-    # ip_forward
     sysctl -w net.ipv4.ip_forward=1
     if ! grep -q 'net.ipv4.ip_forward=1' /etc/sysctl.conf; then
         echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
@@ -97,7 +107,6 @@ step1_system() {
 # =============================================================================
 step2_nodejs() {
     info "=== 2/12 : Node.js 20.x ==="
-
     if command -v node &>/dev/null && node --version | grep -q 'v20'; then
         ok "Node.js déjà installé : $(node --version)"
     else
@@ -105,17 +114,15 @@ step2_nodejs() {
         apt-get install -y -qq nodejs
         ok "Node.js $(node --version) installé"
     fi
-
     npm install -g pm2@7.0.1 localtunnel@2.0.2 --quiet
     ok "PM2 + localtunnel installés globalement"
 }
 
 # =============================================================================
-# ÉTAPE 3 : Docker + n8n image
+# ÉTAPE 3 : Docker + n8n
 # =============================================================================
-step3_docker() {
-    info "=== 3/12 : Docker ==="
-
+step3_docker_n8n() {
+    info "=== 3/12 : Docker + n8n ==="
     if command -v docker &>/dev/null; then
         ok "Docker déjà installé : $(docker --version)"
     else
@@ -126,13 +133,19 @@ step3_docker() {
         ok "Docker installé"
     fi
 
-    # Pull n8n
-    if docker images --format '{{.Repository}}' | grep -q 'n8n'; then
-        ok "Image n8n déjà présente"
+    if docker ps -a --format '{{.Names}}' | grep -q "^${N8N_CONTAINER}$"; then
+        ok "Conteneur n8n déjà présent"
     else
+        info "Téléchargement et démarrage de n8n..."
         docker pull docker.n8n.io/n8nio/n8n:latest
         docker volume create n8n_data 2>/dev/null || true
-        ok "Image n8n téléchargée"
+        docker run -d \
+            --name "$N8N_CONTAINER" \
+            --restart unless-stopped \
+            -p 5678:5678 \
+            -v n8n_data:/home/node/.n8n \
+            docker.n8n.io/n8nio/n8n:latest
+        ok "n8n démarré sur le port 5678"
     fi
 }
 
@@ -146,18 +159,15 @@ step4_binaries() {
     if [ -f "$ZIVPN_BIN" ]; then
         ok "zivpn déjà présent"
     else
-        info "Installation de zivpn via l'installeur officiel..."
-        # Le binaire n'est pas disponible en téléchargement direct.
-        # On utilise l'installeur du projet arivpnstores/zahidbd2
-        bash <(curl -fsSL https://raw.githubusercontent.com/arivpnstores/udp-zivpn/main/install.sh) 2>&1 | tail -3 || {
-            warn "1er installeur échoué, tentative avec zi.sh..."
-            bash <(curl -fsSL https://raw.githubusercontent.com/zahidbd2/udp-zivpn/main/zi.sh) 2>&1 | tail -3 || true
-        }
-        if [ -f "$ZIVPN_BIN" ]; then
-            ok "zivpn installé"
+        if [ "$ARCH_ALT" = "amd64" ] || [ "$ARCH_ALT" = "arm64" ] || [ "$ARCH_ALT" = "arm" ]; then
+            info "Téléchargement de zivpn (${ARCH_ALT})..."
+            ZIVPN_URL="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ARCH_ALT}"
+            curl -fsSL "$ZIVPN_URL" -o "$ZIVPN_BIN" && chmod +x "$ZIVPN_BIN" && ok "zivpn téléchargé" || {
+                warn "Échec du téléchargement direct, tentative installeur..."
+                bash <(curl -fsSL https://raw.githubusercontent.com/arivpnstores/udp-zivpn/main/install.sh) 2>&1 | tail -3 || true
+            }
         else
-            warn "zivpn non trouvé. Installez manuellement :"
-            warn "  bash <(curl -fsSL https://raw.githubusercontent.com/arivpnstores/udp-zivpn/main/install.sh)"
+            warn "Pas de binaire zivpn pour $ARCH"
         fi
     fi
 
@@ -165,22 +175,32 @@ step4_binaries() {
     if [ -f "$UDP_BIN" ]; then
         ok "udp-custom déjà présent"
     else
-        mkdir -p /root/udp
-        info "Téléchargement de udp-custom..."
-        curl -fsSL "https://github.com/Haris131/UDP-Custom/raw/main/udp-custom-linux-amd64" -o "$UDP_BIN" && chmod +x "$UDP_BIN" && ok "udp-custom téléchargé" || {
-            warn "Échec direct, tentative via installeur..."
-            curl -fsSL "https://raw.githubusercontent.com/Haris131/UDP-Custom/main/udp-custom.sh" | bash 2>&1 | tail -3 || true
-        }
+        if [ "$ARCH_ALT" = "amd64" ]; then
+            mkdir -p /root/udp
+            info "Téléchargement de udp-custom..."
+            curl -fsSL "https://github.com/Haris131/UDP-Custom/raw/main/udp-custom-linux-amd64" -o "$UDP_BIN" && chmod +x "$UDP_BIN" && ok "udp-custom téléchargé" || {
+                warn "Échec, tentative via installeur..."
+                curl -fsSL "https://raw.githubusercontent.com/Haris131/UDP-Custom/main/udp-custom.sh" | bash 2>&1 | tail -3 || true
+            }
+        else
+            warn "udp-custom disponible seulement sur amd64"
+        fi
     fi
 
     # --- cloudflared ---
     if [ -f "$CLOUDFLARED_BIN" ]; then
-        ok "cloudflared déjà présent : $($CLOUDFLARED_BIN version 2>/dev/null | head -1)"
+        ok "cloudflared déjà présent"
     else
         info "Téléchargement de cloudflared..."
-        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$CLOUDFLARED_BIN"
-        chmod +x "$CLOUDFLARED_BIN"
-        ok "cloudflared téléchargé : $($CLOUDFLARED_BIN version 2>/dev/null | head -1)"
+        case "$ARCH_ALT" in
+            amd64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
+            arm64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
+            arm)   CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" ;;
+            *)     warn "Pas de cloudflared pour $ARCH" ;;
+        esac
+        if [ -n "${CF_URL:-}" ]; then
+            curl -fsSL "$CF_URL" -o "$CLOUDFLARED_BIN" && chmod +x "$CLOUDFLARED_BIN" && ok "cloudflared téléchargé"
+        fi
     fi
 
     # --- yt-dlp ---
@@ -198,25 +218,18 @@ step4_binaries() {
 # =============================================================================
 step5_users() {
     info "=== 5/12 : Utilisateurs et groupes ==="
-
-    # Groupe vpnusers
     groupadd -f vpnusers
     ok "Groupe vpnusers prêt"
 
-    # S'assurer que l'utilisateur principal existe
-    RUN_USER_HOME=$(eval echo "~$RUN_USER" 2>/dev/null || echo "/home/$RUN_USER")
     if ! id "$RUN_USER" &>/dev/null; then
         useradd -m -s /bin/bash "$RUN_USER"
     fi
     usermod -aG sudo,docker "$RUN_USER"
 
-    # Sudo NOPASSWD
     if [ ! -f "/etc/sudoers.d/$RUN_USER" ]; then
         echo "$RUN_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$RUN_USER"
         chmod 440 "/etc/sudoers.d/$RUN_USER"
         ok "Sudo NOPASSWD configuré pour $RUN_USER"
-    else
-        ok "Sudo déjà configuré"
     fi
 }
 
@@ -225,14 +238,8 @@ step5_users() {
 # =============================================================================
 step6_directories() {
     info "=== 6/12 : Répertoires ==="
+    mkdir -p "$FRONTEND_DIR" "$BACKEND_DIR" /etc/zivpn /root/udp "$USER_HOME/.pm2/logs" "$USER_HOME/.cloudflared"
 
-    mkdir -p "$FRONTEND_DIR"
-    mkdir -p "$BACKEND_DIR"
-    mkdir -p /etc/zivpn
-    mkdir -p /root/udp
-    mkdir -p "$USER_HOME/.pm2/logs"
-
-    # Si ce script est dans le repo cloné, copier les fichiers frontend/backend
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     if [ -f "$SCRIPT_DIR/frontend/index.html" ]; then
         cp "$SCRIPT_DIR/frontend/index.html" "$FRONTEND_DIR/"
@@ -240,23 +247,22 @@ step6_directories() {
         cp "$SCRIPT_DIR/frontend/style.css" "$FRONTEND_DIR/"
         cp "$SCRIPT_DIR/backend/server.js" "$BACKEND_DIR/"
         cp "$SCRIPT_DIR/backend/package.json" "$BACKEND_DIR/" 2>/dev/null || true
-        ok "Fichiers du panel copiés depuis le repo local"
+        ok "Fichiers du panel copiés depuis le repo"
     else
-        warn "Fichiers frontend/backend non trouvés dans le repo."
-        warn "Placez-les dans: frontend/ et backend/ puis relancez"
+        warn "frontend/backend non trouvés dans le repo"
     fi
 
-    chown -R "$RUN_USER":"$RUN_USER" "$FRONTEND_DIR" "$BACKEND_DIR" "$USER_HOME/.pm2" 2>/dev/null || true
+    chown -R "$RUN_USER":"$RUN_USER" "$FRONTEND_DIR" "$BACKEND_DIR" "$USER_HOME/.pm2" "$USER_HOME/.cloudflared" 2>/dev/null || true
     ok "Répertoires créés"
 }
 
 # =============================================================================
-# ÉTAPE 7 : Fichiers de configuration (.env, nginx, services systemd)
+# ÉTAPE 7 : Fichiers de configuration
 # =============================================================================
 step7_configs() {
     info "=== 7/12 : Fichiers de configuration ==="
 
-    # --- .env backend ---
+    # .env backend
     if [ ! -f "$BACKEND_DIR/.env" ]; then
         cat > "$BACKEND_DIR/.env" << EOF
 PORT=3000
@@ -274,26 +280,25 @@ N8N_PORT=5678
 N8N_LOG_PATH=${USER_HOME}/.pm2/logs/n8n-out.log
 N8N_ERR_PATH=${USER_HOME}/.pm2/logs/n8n-error.log
 HERMES_LOG_PATH=${USER_HOME}/.hermes/logs/hermes-tunnel.log
+NETWORK_INTERFACE=${NET_IFACE}
 EOF
         ok ".env backend créé"
-    else
-        ok ".env backend déjà présent"
     fi
 
-    # --- ZiVPN config ---
-    if [ ! -f "$ZIVPN_CONFIG" ]; then
-        if [ ! -f /etc/zivpn/zivpn.crt ] || [ ! -f /etc/zivpn/zivpn.key ]; then
-            info "Génération du certificat SSL auto-signé pour ZiVPN..."
-            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-                -keyout /etc/zivpn/zivpn.key \
-                -out /etc/zivpn/zivpn.crt \
-                -subj "/C=US/ST=California/L=Los Angeles/O=Example Corp/OU=IT Department/CN=zivpn"
-            chmod 644 /etc/zivpn/zivpn.crt
-            chmod 600 /etc/zivpn/zivpn.key
-            ok "Certificat ZiVPN généré"
-        fi
+    # Certificat SSL ZiVPN
+    if [ ! -f /etc/zivpn/zivpn.crt ] || [ ! -f /etc/zivpn/zivpn.key ]; then
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/zivpn/zivpn.key \
+            -out /etc/zivpn/zivpn.crt \
+            -subj "/C=US/ST=California/L=Los Angeles/O=TNS Panel/OU=IT/CN=${PUBLIC_IP}"
+        chmod 644 /etc/zivpn/zivpn.crt
+        chmod 600 /etc/zivpn/zivpn.key
+        ok "Certificat ZiVPN généré (CN=${PUBLIC_IP})"
+    fi
 
-        cat > "$ZIVPN_CONFIG" << 'EOF'
+    # ZiVPN config
+    if [ ! -f "$ZIVPN_CONFIG" ]; then
+        cat > "$ZIVPN_CONFIG" << EOF
 {
   "listen": ":443",
   "cert": "/etc/zivpn/zivpn.crt",
@@ -302,17 +307,15 @@ EOF
   "auth": {
     "mode": "passwords",
     "config": [
-      "admin1234"
+      "${ADMIN_PASSWORD}"
     ]
   }
 }
 EOF
         ok "ZiVPN config créée"
-    else
-        ok "ZiVPN config déjà présente"
     fi
 
-    # --- UDP-Custom config ---
+    # UDP-Custom config
     if [ ! -f "$UDP_CONFIG" ]; then
         cat > "$UDP_CONFIG" << 'EOF'
 {
@@ -325,16 +328,13 @@ EOF
 }
 EOF
         ok "UDP-Custom config créée"
-    else
-        ok "UDP-Custom config déjà présente"
     fi
 
-    # --- Systemd: zivpn ---
+    # Service systemd zivpn
     cat > /etc/systemd/system/zivpn.service << 'EOF'
 [Unit]
-Description=zivpn VPN Server
+Description=ZiVPN Server
 After=network.target
-
 [Service]
 Type=simple
 User=root
@@ -346,18 +346,15 @@ Environment=ZIVPN_LOG_LEVEL=info
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
-
 [Install]
 WantedBy=multi-user.target
 EOF
-    ok "Service systemd zivpn créé"
 
-    # --- Systemd: udp-custom ---
+    # Service systemd udp-custom
     cat > /etc/systemd/system/udp-custom.service << 'EOF'
 [Unit]
-Description=UDP Custom by ePro Dev. Team
+Description=UDP Custom
 After=network.target
-
 [Service]
 User=root
 Type=simple
@@ -365,29 +362,24 @@ ExecStart=/root/udp/udp-custom server --config /root/udp/config.json
 WorkingDirectory=/root/udp/
 Restart=always
 RestartSec=2s
-
 [Install]
 WantedBy=multi-user.target
 EOF
-    ok "Service systemd udp-custom créé"
 
     systemctl daemon-reload
+    ok "Services systemd créés"
 
-    # --- Nginx: vpn_panel ---
+    # Nginx
     cat > /etc/nginx/sites-available/vpn_panel << EOF
 server {
     listen 2053 default_server;
     listen [::]:2053 default_server;
-
     root /var/www/vpn_panel;
     index index.html;
-
     server_name ${PUBLIC_IP} ${PRIVATE_IP} ${HOSTNAME} _;
-
     location / {
         try_files \$uri \$uri/ /index.html;
     }
-
     location /api/ {
         proxy_pass http://127.0.0.1:3000/api/;
         proxy_http_version 1.1;
@@ -396,28 +388,25 @@ server {
     }
 }
 EOF
-
     if [ ! -L /etc/nginx/sites-enabled/vpn_panel ]; then
         rm -f /etc/nginx/sites-enabled/default
         ln -s /etc/nginx/sites-available/vpn_panel /etc/nginx/sites-enabled/
     fi
     nginx -t && systemctl reload nginx || true
-    ok "Nginx configuré (port 2053, proxy /api/ -> :3000)"
+    ok "Nginx configuré (port 2053 → panel, /api/ → 3000)"
 }
 
 # =============================================================================
-# ÉTAPE 8 : Installation npm backend
+# ÉTAPE 8 : Dépendances npm backend
 # =============================================================================
 step8_npm() {
     info "=== 8/12 : Dépendances npm ==="
-
-    # Backend package.json
     if [ ! -f "$BACKEND_DIR/package.json" ]; then
         cat > "$BACKEND_DIR/package.json" << 'EOF'
 {
   "name": "server-dashboard",
   "version": "1.0.0",
-  "description": "Real-time server monitoring dashboard",
+  "description": "TNS Panel backend",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "dependencies": {
@@ -429,9 +418,7 @@ step8_npm() {
 }
 EOF
     fi
-
-    cd "$BACKEND_DIR"
-    if [ ! -d node_modules ]; then
+    if [ ! -d "$BACKEND_DIR/node_modules" ]; then
         su - "$RUN_USER" -c "cd $BACKEND_DIR && npm install --omit=dev --quiet"
         ok "Dépendances backend installées"
     else
@@ -440,33 +427,23 @@ EOF
 }
 
 # =============================================================================
-# ÉTAPE 9 : Clone WhatsApp Bot + installation npm
+# ÉTAPE 9 : WhatsApp Bot
 # =============================================================================
 step9_whatsapp_bot() {
     info "=== 9/12 : WhatsApp Bot ==="
-
-    if [ -d "$BOT_DIR" ]; then
+    if [ -d "$BOT_DIR" ] && [ -f "$BOT_DIR/package.json" ]; then
         ok "WhatsApp Bot déjà présent"
     else
-        info "Tentative de clonage du WhatsApp Bot..."
-        BOT_REPO_URL="https://github.com/TheShellMaster/BOT_WHATSAPP.git"
-        if [ -n "${GITHUB_TOKEN:-}" ]; then
-            git clone "https://${GITHUB_TOKEN}@github.com/TheShellMaster/BOT_WHATSAPP.git" "$BOT_DIR" 2>/dev/null && ok "WhatsApp Bot cloné avec token" || {
-                warn "Clone avec token échoué, clone anonyme..."
-                git clone "$BOT_REPO_URL" "$BOT_DIR" 2>/dev/null && ok "WhatsApp Bot cloné" || {
-                    warn "Clone échoué (repo privé). Dossier créé vide."
-                    mkdir -p "$BOT_DIR"/{commands,utils,baileys_auth,data}
-                }
-            }
-        else
-            git clone "$BOT_REPO_URL" "$BOT_DIR" 2>/dev/null || {
-                warn "Clone échoué (repo privé). Dossier créé vide."
-                mkdir -p "$BOT_DIR"/{commands,utils,baileys_auth,data}
-            }
-        fi
+        info "Clonage du WhatsApp Bot..."
+        rm -rf "$BOT_DIR"
+        git clone "https://github.com/TheShellMaster/BOT_WHATSAPP.git" "$BOT_DIR" 2>/dev/null && {
+            ok "WhatsApp Bot cloné avec succès"
+        } || {
+            warn "Échec du clonage. Vérifiez que le repo est public."
+            mkdir -p "$BOT_DIR"
+        }
     fi
 
-    # .env WhatsApp Bot
     if [ ! -f "$BOT_DIR/.env" ]; then
         cat > "$BOT_DIR/.env" << EOF
 GEMINI_API_KEY=
@@ -476,76 +453,62 @@ OWNER_JID=${OWNER_JID}
 SERVER_PUBLIC_IP=${PUBLIC_IP}
 SERVER_PRIVATE_IP=${PRIVATE_IP}
 EOF
-        ok ".env WhatsApp Bot créé (éditez GEMINI_API_KEY et OWNER_JID)"
+        ok ".env WhatsApp Bot créé"
     fi
 
     if [ -f "$BOT_DIR/package.json" ] && [ ! -d "$BOT_DIR/node_modules" ]; then
-        su - "$RUN_USER" -c "cd $BOT_DIR && npm install --omit=dev --quiet"
-        ok "Dépendances WhatsApp Bot installées"
-    else
-        ok "WhatsApp Bot déjà configuré"
+        su - "$RUN_USER" -c "cd $BOT_DIR && npm install --omit=dev --quiet" && ok "npm WhatsApp Bot installé" || warn "npm install WhatsApp Bot échoué"
     fi
 }
 
 # =============================================================================
-# ÉTAPE 10 : Hermes Agent (clone + venv)
+# ÉTAPE 10 : Hermes Agent
 # =============================================================================
 step10_hermes() {
     info "=== 10/12 : Hermes Agent ==="
-
     if [ -d "$HERMES_DIR" ]; then
         ok "Hermes déjà cloné"
     else
         su - "$RUN_USER" -c "mkdir -p '$USER_HOME/.hermes'"
-        su - "$RUN_USER" -c "git clone https://github.com/NousResearch/hermes-agent.git '$HERMES_DIR'" || {
-            warn "Clone Hermes échoué (skip)"
+        su - "$RUN_USER" -c "git clone https://github.com/NousResearch/hermes-agent.git '$HERMES_DIR'" && ok "Hermes cloné" || {
+            warn "Clone Hermes échoué"
             return
         }
     fi
-
     if [ -d "$HERMES_DIR/venv" ]; then
         ok "Virtualenv Hermes déjà présent"
     else
         if [ -f "$HERMES_DIR/setup-hermes.sh" ]; then
-            su - "$RUN_USER" -c "cd '$HERMES_DIR' && bash setup-hermes.sh" || {
-                info "Fallback: création venv manuelle..."
-                su - "$RUN_USER" -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e ." || true
-            }
-        else
-            su - "$RUN_USER" -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e ." || true
+            su - "$RUN_USER" -c "cd '$HERMES_DIR' && bash setup-hermes.sh" 2>&1 | tail -3 || true
         fi
-        ok "Virtualenv Hermes installé"
+        if [ ! -d "$HERMES_DIR/venv" ]; then
+            su - "$RUN_USER" -c "cd '$HERMES_DIR' && python3 -m venv venv && venv/bin/pip install --quiet -e . 2>/dev/null" || true
+        fi
+        if [ -d "$HERMES_DIR/venv" ]; then
+            ok "Virtualenv Hermes installé"
+        else
+            warn "Hermes venv non créé"
+        fi
     fi
-
-    # Répertoire logs Hermes
     mkdir -p "$USER_HOME/.hermes/logs"
     chown -R "$RUN_USER":"$RUN_USER" "$USER_HOME/.hermes" 2>/dev/null || true
 }
 
 # =============================================================================
-# ÉTAPE 11 : iptables NAT + règles
+# ÉTAPE 11 : iptables NAT
 # =============================================================================
 step11_iptables() {
     info "=== 11/12 : Règles iptables ==="
-
-    # Nettoyage des anciennes règles
     iptables -t nat -D PREROUTING -i "$NET_IFACE" -p udp --dport 443 -j ACCEPT 2>/dev/null || true
     iptables -t nat -D PREROUTING -i "$NET_IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :443 2>/dev/null || true
     iptables -t nat -D POSTROUTING -o "$NET_IFACE" -j MASQUERADE 2>/dev/null || true
-
-    # ZiVPN : port range 6000-19999 -> 443
     iptables -t nat -I PREROUTING 1 -i "$NET_IFACE" -p udp --dport 443 -j ACCEPT
     iptables -t nat -I PREROUTING 1 -i "$NET_IFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :443
     iptables -t nat -A POSTROUTING -o "$NET_IFACE" -j MASQUERADE
-
-    # UDP-Custom catch-all
     iptables -t nat -A PREROUTING -i "$NET_IFACE" -p udp --dport 1:65535 -j DNAT --to-destination :36712 2>/dev/null || true
-
-    # Sauvegarde iptables
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     netfilter-persistent save 2>/dev/null || true
-
     ok "Règles iptables configurées (interface: $NET_IFACE)"
 }
 
@@ -555,40 +518,45 @@ step11_iptables() {
 step12_start() {
     info "=== 12/12 : Démarrage des services ==="
 
-    # Nginx
     systemctl enable nginx
     systemctl start nginx
     ok "Nginx démarré"
 
-    # ZiVPN
-    systemctl enable zivpn
-    systemctl start zivpn || warn "ZiVPN non démarré (binaire manquant ?)"
-    ok "ZiVPN configuré"
+    if [ -f "$ZIVPN_BIN" ]; then
+        systemctl enable zivpn
+        systemctl start zivpn && ok "ZiVPN démarré" || warn "ZiVPN non démarré"
+    fi
 
-    # UDP-Custom
-    systemctl enable udp-custom
-    systemctl start udp-custom || warn "UDP-Custom non démarré (binaire manquant ?)"
-    ok "UDP-Custom configuré"
+    if [ -f "$UDP_BIN" ]; then
+        systemctl enable udp-custom
+        systemctl start udp-custom && ok "UDP-Custom démarré" || warn "UDP-Custom non démarré"
+    fi
 
-    # PM2 server-dashboard
+    if $DO_N8N; then
+        docker start "$N8N_CONTAINER" 2>/dev/null || true
+        ok "n8n démarré (port 5678)"
+    fi
+
     if [ -f "$BACKEND_DIR/server.js" ]; then
         su - "$RUN_USER" -c "cd $BACKEND_DIR && pm2 start server.js --name server-dashboard 2>/dev/null || pm2 restart server-dashboard 2>/dev/null || true"
         su - "$RUN_USER" -c "pm2 save"
-        ok "server-dashboard démarré (PM2)"
-    else
-        warn "server.js manquant, démarrage PM2 ignoré"
+        ok "server-dashboard démarré (PM2, port 3000)"
     fi
-
-    # PM2 startup
     su - "$RUN_USER" -c "pm2 startup systemd -u $RUN_USER --hp $USER_HOME 2>/dev/null || true"
 
-    ok "Installation terminée !"
-    info "======================================"
-    info "  Panel : http://${PUBLIC_IP}:2053"
-    info "  API   : http://localhost:3000/api/stats"
-    info "  SSH   : ${RUN_USER}@${PUBLIC_IP}"
-    info "  Admin : ${ADMIN_PASSWORD}"
-    info "======================================"
+    # cloudflared tunnels
+    if [ -f "$CLOUDFLARED_BIN" ]; then
+        if $DO_N8N && docker ps --format '{{.Names}}' | grep -q "^${N8N_CONTAINER}$"; then
+            nohup "$CLOUDFLARED_BIN" tunnel --url http://localhost:5678 --loglevel error > /dev/null 2>&1 &
+            echo "$!" > "$CF_TUNNEL_N8N_PID"
+            ok "Tunnel cloudflared n8n démarré"
+        fi
+        if $DO_HERMES && [ -f "$HERMES_DIR/venv/bin/hermes" ]; then
+            nohup "$CLOUDFLARED_BIN" tunnel --url http://127.0.0.1:9119 --loglevel error > /dev/null 2>&1 &
+            echo "$!" > "$CF_TUNNEL_HERMES_PID"
+            ok "Tunnel cloudflared Hermes démarré"
+        fi
+    fi
 }
 
 # =============================================================================
@@ -596,50 +564,79 @@ step12_start() {
 # =============================================================================
 main() {
     echo ""
-    echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║         TNS-Panel — Auto-Installateur        ║${NC}"
-    echo -e "${CYAN}║     Déploie le panel VPN + tous les services ║${NC}"
-    echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}╔══════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║       TNS-Panel — Auto-Installateur Complet     ║${NC}"
+    echo -e "${CYAN}║   Panel VPN • ZiVPN • UDP-Custom • n8n • Bot   ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${GREEN}Détection système :${NC}"
-    echo -e "  Distribution : ${DISTRO}"
-    echo -e "  Architecture : ${ARCH}"
-    echo -e "  Hostname     : ${HOSTNAME}"
-    echo -e "  Utilisateur  : ${RUN_USER} (${USER_HOME})"
-    echo -e "  IP Publique  : ${PUBLIC_IP}"
-    echo -e "  IP Privée    : ${PRIVATE_IP}"
-    echo -e "  Interface    : ${NET_IFACE}"
-    echo -e "  Admin Pass   : ${ADMIN_PASSWORD}"
+    echo -e "  ${GREEN}Détection :${NC}"
+    echo -e "  OS: ${DISTRO} | Arch: ${ARCH} | User: ${RUN_USER}"
+    echo -e "  IP: ${PUBLIC_IP} (${PRIVATE_IP}) | IF: ${NET_IFACE}"
+    echo -e "  Admin pass: ${ADMIN_PASSWORD}"
     echo ""
 
+    DO_VPN=false; DO_N8N=false; DO_BOT=false; DO_HERMES=false
+
+    if ask "Installation complète (tout) ?" "y"; then
+        DO_VPN=true; DO_N8N=true; DO_BOT=true
+    else
+        ask "Installer les services VPN (ZiVPN, UDP-Custom, iptables) ?" "y" && DO_VPN=true
+        ask "Installer Docker + n8n ?" "y" && DO_N8N=true
+        ask "Installer le WhatsApp Bot ?" "y" && DO_BOT=true
+        ask "Installer Hermes Agent ?" "n" && DO_HERMES=true
+    fi
+
+    # Steps 1-2 : toujours exécutés
     step1_system
     step2_nodejs
-    step3_docker
-    step4_binaries
+
+    # Step 3 : Docker + n8n
+    $DO_N8N && step3_docker_n8n
+
+    # Step 4 : Binaires (selon services choisis)
+    if $DO_VPN || $DO_N8N; then
+        step4_binaries
+    fi
+
+    # Step 5-8 : toujours
     step5_users
     step6_directories
     step7_configs
     step8_npm
-    step9_whatsapp_bot
-    step10_hermes
-    step11_iptables
+
+    # Step 9 : WhatsApp Bot
+    $DO_BOT && step9_whatsapp_bot
+
+    # Step 10 : Hermes
+    $DO_HERMES && step10_hermes
+
+    # Step 11 : iptables
+    $DO_VPN && step11_iptables
+
+    # Step 12 : Démarrage
     step12_start
 
     echo ""
-    echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║        INSTALLATION TERMINÉE AVEC SUCCÈS     ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║        INSTALLATION TERMINÉE AVEC SUCCÈS       ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${YELLOW}APRÈS INSTALL :${NC}"
-    echo -e "  ${CYAN}1. Panel : http://${PUBLIC_IP}:2053 (admin: ${ADMIN_PASSWORD})${NC}"
-    echo -e "  ${CYAN}2. SSH   : ${RUN_USER}@${PUBLIC_IP}${NC}"
-    if [ ! -d "$BOT_DIR" ] || [ ! -f "$BOT_DIR/package.json" ]; then
-    echo -e "  ${YELLOW}3. WhatsApp Bot : clone manuel requis (repo privé)${NC}"
-    echo -e "     git clone https://<TOKEN>@github.com/TheShellMaster/BOT_WHATSAPP.git $BOT_DIR"
-    else
-    echo -e "  ${CYAN}3. WhatsApp Bot : pm2 start whatsapp-bot${NC}"
+    echo -e "  ${CYAN}Panel  : http://${PUBLIC_IP}:2053${NC}"
+    echo -e "  ${CYAN}API    : http://${PUBLIC_IP}:3000/api/stats${NC}"
+    echo -e "  ${CYAN}SSH    : ${RUN_USER}@${PUBLIC_IP}${NC}"
+    echo -e "  ${CYAN}Admin  : ${ADMIN_PASSWORD}${NC}"
+    if $DO_BOT && [ -f "$BOT_DIR/package.json" ]; then
+        echo -e "  ${CYAN}Bot    : pm2 start whatsapp-bot${NC}"
     fi
-    echo -e "  ${CYAN}4. Définir GEMINI_API_KEY dans $BOT_DIR/.env${NC}"
+    if $DO_N8N; then
+        echo -e "  ${CYAN}n8n    : http://${PUBLIC_IP}:5678${NC}"
+    fi
+    echo ""
+    echo -e "  ${YELLOW}Config :${NC}"
+    if $DO_BOT; then
+        echo -e "    - Éditer ${CYAN}$BOT_DIR/.env${NC} → GEMINI_API_KEY"
+    fi
+    echo -e "    - Changer le mot de passe admin dans le panel"
     echo ""
 }
 
