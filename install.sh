@@ -539,9 +539,29 @@ step12_start() {
 
     if [ -f "$BACKEND_DIR/server.js" ]; then
         su - "$RUN_USER" -c "cd $BACKEND_DIR && pm2 start server.js --name server-dashboard 2>/dev/null || pm2 restart server-dashboard 2>/dev/null || true"
-        su - "$RUN_USER" -c "pm2 save"
         ok "server-dashboard démarré (PM2, port 3000)"
     fi
+
+    # WhatsApp Bot (PM2, mais pas start — attend le QR code)
+    if $DO_BOT; then
+        if [ -f "$BOT_DIR/index.js" ]; then
+            BOT_MAIN="index.js"
+        elif [ -f "$BOT_DIR/main.js" ]; then
+            BOT_MAIN="main.js"
+        elif [ -f "$BOT_DIR/app.js" ]; then
+            BOT_MAIN="app.js"
+        else
+            BOT_MAIN=""
+        fi
+        if [ -n "$BOT_MAIN" ]; then
+            su - "$RUN_USER" -c "cd $BOT_DIR && pm2 start $BOT_MAIN --name whatsapp-bot 2>/dev/null || pm2 restart whatsapp-bot 2>/dev/null || true"
+            ok "WhatsApp Bot enregistré (PM2, scan QR requis)"
+        else
+            warn "WhatsApp Bot: point d'entrée non trouvé (index.js/main.js/app.js)"
+        fi
+    fi
+
+    su - "$RUN_USER" -c "pm2 save"
     su - "$RUN_USER" -c "pm2 startup systemd -u $RUN_USER --hp $USER_HOME 2>/dev/null || true"
 
     # cloudflared tunnels
